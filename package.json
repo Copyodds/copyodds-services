@@ -110,7 +110,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "Apache-2.0",
   "type": "commonjs",
   "dependencies": {
     "@alphaxiv/agents": "npm:@jsr/alphaxiv__agents@^0.3.21",
