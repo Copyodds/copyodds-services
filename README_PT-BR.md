@@ -8,6 +8,8 @@
 
 Backend Node.js de produção que oferece autenticação, execução de copy trade, ranking de smart money, depósitos custodiais e operações administrativas — integrado ao CLOB da Polymarket e liquidação on-chain na Polygon.
 
+[Site oficial](https://app.copyodds.io/) - Comece a usar o CopyOdds agora.
+
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Prisma-4169E1?logo=postgresql&logoColor=white)](https://www.prisma.io/)
@@ -59,10 +61,6 @@ Veja [`.env.example`](.env.example) para o template completo. Obrigatórias em p
 | `API_KEY` | Chave API compartilhada para validação server-side |
 | `CUSTODY_ENCRYPT_KEY` | Chave de criptografia custodial (≥ 32 caracteres) |
 | `RPC_URL` | Endpoint RPC Polygon |
-<<<<<<< HEAD
-=======
-| `CUSTODY_TREASURY_ADDRESS` | Endereço de recebimento do tesouro |
->>>>>>> 8b3a98e0fc0ffcb9a537e608315a8d4ed1e939b9
 
 > **Nunca commite `.env` no controle de versão.** Use `.env.example` apenas como template.
 

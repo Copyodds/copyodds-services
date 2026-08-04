@@ -8,6 +8,8 @@
 
 프로덕션급 Node.js 백엔드 — 사용자 인증, 카피 트레이드 실행, 스마트 머니 리더보드, 커스터디얼 입금, 관리 기능을 제공합니다. Polymarket CLOB 및 Polygon 온체인 결제 기반.
 
+[공식 웹사이트](https://app.copyodds.io/) - 지금 바로 CopyOdds를 시작하세요.
+
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Prisma-4169E1?logo=postgresql&logoColor=white)](https://www.prisma.io/)
@@ -59,10 +61,6 @@ npm run dev
 | `API_KEY` | 서버 측 공유 API 키 |
 | `CUSTODY_ENCRYPT_KEY` | 커스터디얼 암호화 키 (32자 이상) |
 | `RPC_URL` | Polygon RPC 엔드포인트 |
-<<<<<<< HEAD
-=======
-| `CUSTODY_TREASURY_ADDRESS` | 국고 수신 전용 주소 |
->>>>>>> 8b3a98e0fc0ffcb9a537e608315a8d4ed1e939b9
 
 > **`.env`를 Git에 커밋하지 마세요.** `.env.example`을 템플릿으로만 사용하세요.
 

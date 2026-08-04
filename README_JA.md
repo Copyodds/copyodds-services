@@ -8,6 +8,8 @@
 
 本番環境対応の Node.js バックエンド。ユーザー認証、コピートレード実行、スマートマネーランキング、カストディアル入金、管理機能を提供 — Polymarket CLOB と Polygon オンチェーン決済に対応。
 
+[公式サイト](https://app.copyodds.io/) - CopyOdds を今すぐ体験する。
+
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Prisma-4169E1?logo=postgresql&logoColor=white)](https://www.prisma.io/)
@@ -59,10 +61,6 @@ npm run dev
 | `API_KEY` | サーバー側共有 API キー |
 | `CUSTODY_ENCRYPT_KEY` | カストディアル暗号化キー（32 文字以上） |
 | `RPC_URL` | Polygon RPC エンドポイント |
-<<<<<<< HEAD
-=======
-| `CUSTODY_TREASURY_ADDRESS` | 国庫受取専用アドレス |
->>>>>>> 8b3a98e0fc0ffcb9a537e608315a8d4ed1e939b9
 
 > **`.env` を Git にコミットしないでください。** `.env.example` をテンプレートとして使用。
 

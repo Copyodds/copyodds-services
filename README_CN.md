@@ -8,6 +8,8 @@
 
 生产级 Node.js 服务，涵盖用户认证、跟单执行、聪明钱排行榜、托管充值与管理后台 —— 基于 Polymarket CLOB 与 Polygon 链上结算。
 
+[官网入口](https://app.copyodds.io/) - 点击立即体验 CopyOdds。
+
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Prisma-4169E1?logo=postgresql&logoColor=white)](https://www.prisma.io/)
@@ -59,10 +61,6 @@ npm run dev
 | `API_KEY` | 服务端共享 API Key |
 | `CUSTODY_ENCRYPT_KEY` | 托管钱包加密密钥（≥ 32 字符） |
 | `RPC_URL` | Polygon RPC 节点 |
-<<<<<<< HEAD
-=======
-| `CUSTODY_TREASURY_ADDRESS` | 国库仅收款地址 |
->>>>>>> 8b3a98e0fc0ffcb9a537e608315a8d4ed1e939b9
 
 > **切勿将 `.env` 提交到 Git。** 仅以 `.env.example` 作为模板。
 
