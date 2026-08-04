@@ -59,6 +59,10 @@ Veja [`.env.example`](.env.example) para o template completo. Obrigatórias em p
 | `API_KEY` | Chave API compartilhada para validação server-side |
 | `CUSTODY_ENCRYPT_KEY` | Chave de criptografia custodial (≥ 32 caracteres) |
 | `RPC_URL` | Endpoint RPC Polygon |
+<<<<<<< HEAD
+=======
+| `CUSTODY_TREASURY_ADDRESS` | Endereço de recebimento do tesouro |
+>>>>>>> 8b3a98e0fc0ffcb9a537e608315a8d4ed1e939b9
 
 > **Nunca commite `.env` no controle de versão.** Use `.env.example` apenas como template.
 

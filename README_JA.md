@@ -59,6 +59,10 @@ npm run dev
 | `API_KEY` | サーバー側共有 API キー |
 | `CUSTODY_ENCRYPT_KEY` | カストディアル暗号化キー（32 文字以上） |
 | `RPC_URL` | Polygon RPC エンドポイント |
+<<<<<<< HEAD
+=======
+| `CUSTODY_TREASURY_ADDRESS` | 国庫受取専用アドレス |
+>>>>>>> 8b3a98e0fc0ffcb9a537e608315a8d4ed1e939b9
 
 > **`.env` を Git にコミットしないでください。** `.env.example` をテンプレートとして使用。
 

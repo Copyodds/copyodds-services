@@ -59,6 +59,10 @@ npm run dev
 | `API_KEY` | 服务端共享 API Key |
 | `CUSTODY_ENCRYPT_KEY` | 托管钱包加密密钥（≥ 32 字符） |
 | `RPC_URL` | Polygon RPC 节点 |
+<<<<<<< HEAD
+=======
+| `CUSTODY_TREASURY_ADDRESS` | 国库仅收款地址 |
+>>>>>>> 8b3a98e0fc0ffcb9a537e608315a8d4ed1e939b9
 
 > **切勿将 `.env` 提交到 Git。** 仅以 `.env.example` 作为模板。
 

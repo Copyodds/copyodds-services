@@ -59,6 +59,10 @@ See [`.env.example`](.env.example) for the full template. Production-required ke
 | `API_KEY` | Shared API key for server-side validation |
 | `CUSTODY_ENCRYPT_KEY` | Custodial wallet encryption key (≥ 32 chars) |
 | `RPC_URL` | Polygon RPC endpoint |
+<<<<<<< HEAD
+=======
+| `CUSTODY_TREASURY_ADDRESS` | Treasury receive-only address |
+>>>>>>> 8b3a98e0fc0ffcb9a537e608315a8d4ed1e939b9
 
 > **Never commit `.env` to version control.** Use `.env.example` as a template only.
 
