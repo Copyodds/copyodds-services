@@ -1,0 +1,2 @@
+ALTER TABLE "LeaderTrade" ADD COLUMN IF NOT EXISTS "marketTitle" TEXT;
+ALTER TABLE "LeaderTrade" ADD COLUMN IF NOT EXISTS "outcome" TEXT;

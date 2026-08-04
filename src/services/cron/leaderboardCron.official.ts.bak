@@ -1,0 +1,505 @@
+﻿import { Prisma } from '../../generated/prisma/client';
+import { prisma } from '../../db';
+import { CONFIG } from '../../config/env';
+import {
+  fetchLeaderboardWithRetry,
+  type LeaderboardApiEntry,
+} from '../polymarket/polymarketLeaderboard';
+import { type LeaderboardPreset } from '../polymarket/leaderboardCache';
+import { syncPredictingTopLeaderboards } from '../polymarket/predictingTopLeaderboard';
+import { runSmartMoneyCandidatePipeline } from '../smartMoney/smartMoneyCron';
+
+let syncRunning = false;
+
+const PAGE_LIMIT = 50;
+const MAX_ROWS_PER_PRESET = 1000;
+const MIN_HEALTHY_ROWS = 500;
+const LEADERBOARD_CREATE_CHUNK_SIZE = 500;
+const LEADERBOARD_DELETE_CHUNK_SIZE = 500;
+
+function formatDurationMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+}
+
+function parseLeaderboardRank(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === 'string') {
+    const n = Number.parseInt(value, 10);
+    if (!Number.isNaN(n)) return n;
+  }
+  return null;
+}
+
+function apiEntryToCreateInput(
+  e: LeaderboardApiEntry,
+  preset: LeaderboardPreset,
+  batchId: string,
+  syncedAt: Date,
+  syncVersion: number
+): Prisma.LeaderboardRowCreateManyInput | null {
+  const rank = parseLeaderboardRank(e.rank);
+  const raw = typeof e.proxyWallet === 'string' ? e.proxyWallet.trim().toLowerCase() : '';
+  if (rank == null || !/^0x[a-f0-9]{40}$/.test(raw)) {
+    return null;
+  }
+  const vol = e.vol != null ? String(e.vol) : '0';
+  const pnl = e.pnl != null ? String(e.pnl) : '0';
+  return {
+    category: preset.category,
+    timePeriod: preset.timePeriod,
+    orderBy: preset.orderBy,
+    batchId,
+    syncVersion,
+    rank,
+    proxyWallet: raw,
+    userName: e.userName ?? null,
+    profileImage: typeof e.profileImage === 'string' ? e.profileImage : null,
+    xUsername: xUsernameFromEntry(e),
+    vol: new Prisma.Decimal(vol),
+    pnl: new Prisma.Decimal(pnl),
+    syncedAt,
+  };
+}
+
+function xUsernameFromEntry(e: LeaderboardApiEntry): string | null {
+  const v = e.xUsername;
+  if (typeof v === 'string' && v.length > 0) return v;
+  return null;
+}
+
+function getPageSignature(page: LeaderboardApiEntry[]): string {
+  if (page.length === 0) return 'empty';
+  const first = page[0];
+  const last = page[page.length - 1];
+  return JSON.stringify({
+    len: page.length,
+    firstRank: first?.rank ?? null,
+    firstWallet: first?.proxyWallet ?? null,
+    lastRank: last?.rank ?? null,
+    lastWallet: last?.proxyWallet ?? null,
+  });
+}
+
+type PresetFetchResult = {
+  preset: LeaderboardPreset;
+  rows: Prisma.LeaderboardRowCreateManyInput[];
+  syncVersion: number;
+  previousCount: number;
+  fetchedCount: number;
+  acceptedCount: number;
+  filteredCount: number;
+  duplicateCount: number;
+  pageCount: number;
+  stoppedByRepeat: boolean;
+  firstPageEmpty: boolean;
+  healthy: boolean;
+  healthReason: string | null;
+  elapsedMs: number;
+};
+
+function getPresetLabel(preset: LeaderboardPreset): string {
+  return `${preset.category}:${preset.timePeriod}:${preset.orderBy}`;
+}
+
+function createLeaderboardBatchId(syncedAt: Date): string {
+  return `official-${syncedAt.getTime()}`;
+}
+
+function getHealthyRowThreshold(previousCount: number): number {
+  if (previousCount <= 0) {
+    return Math.min(MIN_HEALTHY_ROWS, MAX_ROWS_PER_PRESET);
+  }
+  return Math.min(MAX_ROWS_PER_PRESET, Math.max(MIN_HEALTHY_ROWS, Math.ceil(previousCount * 0.8)));
+}
+
+function getPresetHealthyRowThreshold(preset: LeaderboardPreset, previousCount: number): number {
+  if (preset.category === 'OVERALL') {
+    return getHealthyRowThreshold(previousCount);
+  }
+  if (previousCount <= 0) {
+    return 1;
+  }
+  return Math.max(1, Math.ceil(previousCount * 0.5));
+}
+
+function evaluatePresetHealth(input: {
+  preset: LeaderboardPreset;
+  previousCount: number;
+  acceptedCount: number;
+  firstPageEmpty: boolean;
+  stoppedByRepeat: boolean;
+}): { healthy: boolean; reason: string | null } {
+  if (input.firstPageEmpty) {
+    return { healthy: false, reason: 'first page is empty' };
+  }
+
+  if (input.acceptedCount === 0) {
+    return { healthy: false, reason: 'no valid rows accepted' };
+  }
+
+  const threshold = getPresetHealthyRowThreshold(input.preset, input.previousCount);
+  if (input.acceptedCount < threshold) {
+    return {
+      healthy: false,
+      reason: `accepted rows ${input.acceptedCount} below threshold ${threshold}`,
+    };
+  }
+
+  if (input.stoppedByRepeat && input.acceptedCount < MAX_ROWS_PER_PRESET) {
+    return {
+      healthy: false,
+      reason: 'stopped by repeated page before reaching safe row count',
+    };
+  }
+
+  return { healthy: true, reason: null };
+}
+
+async function fetchAllPagesForPreset(
+  preset: LeaderboardPreset,
+  gapMs: number,
+  batchId: string,
+  syncedAt: Date,
+  syncVersion: number,
+  previousCount: number
+): Promise<PresetFetchResult> {
+  const rows: Prisma.LeaderboardRowCreateManyInput[] = [];
+  const seenPageSignatures = new Set<string>();
+  const seenRanks = new Set<number>();
+  const seenWallets = new Set<string>();
+  let offset = 0;
+  let pageCount = 0;
+  let stoppedByRepeat = false;
+  let fetchedCount = 0;
+  let filteredCount = 0;
+  let duplicateCount = 0;
+  let firstPageEmpty = false;
+  const startedAt = Date.now();
+  for (;;) {
+    const page = await fetchLeaderboardWithRetry(
+      {
+        category: preset.category,
+        timePeriod: preset.timePeriod,
+        orderBy: preset.orderBy,
+        limit: PAGE_LIMIT,
+        offset,
+      },
+      { gapMs }
+    );
+    if (page.length === 0) {
+      if (pageCount === 0) {
+        firstPageEmpty = true;
+      }
+      break;
+    }
+    pageCount += 1;
+    fetchedCount += page.length;
+    const pageSignature = getPageSignature(page);
+    if (seenPageSignatures.has(pageSignature)) {
+      stoppedByRepeat = true;
+      console.warn('[leaderboard-cron] repeated tail page detected, stopping pagination', {
+        preset,
+        offset,
+        pageCount,
+        signature: pageSignature,
+      });
+      break;
+    }
+    seenPageSignatures.add(pageSignature);
+    for (const entry of page) {
+      const row = apiEntryToCreateInput(entry, preset, batchId, syncedAt, syncVersion);
+      if (!row) {
+        filteredCount += 1;
+        continue;
+      }
+      if (seenRanks.has(row.rank) || seenWallets.has(row.proxyWallet)) {
+        duplicateCount += 1;
+        continue;
+      }
+      seenRanks.add(row.rank);
+      seenWallets.add(row.proxyWallet);
+      rows.push(row);
+      if (rows.length >= MAX_ROWS_PER_PRESET) {
+        const health = evaluatePresetHealth({
+          previousCount,
+          preset,
+          acceptedCount: rows.length,
+          firstPageEmpty,
+          stoppedByRepeat,
+        });
+        return {
+          preset,
+          rows,
+          syncVersion,
+          previousCount,
+          fetchedCount,
+          acceptedCount: rows.length,
+          filteredCount,
+          duplicateCount,
+          pageCount,
+          stoppedByRepeat,
+          firstPageEmpty,
+          healthy: health.healthy,
+          healthReason: health.reason,
+          elapsedMs: Date.now() - startedAt,
+        };
+      }
+    }
+    if (page.length < PAGE_LIMIT) break;
+    offset += PAGE_LIMIT;
+  }
+
+  const health = evaluatePresetHealth({
+    previousCount,
+    preset,
+    acceptedCount: rows.length,
+    firstPageEmpty,
+    stoppedByRepeat,
+  });
+  return {
+    preset,
+    rows,
+    syncVersion,
+    previousCount,
+    fetchedCount,
+    acceptedCount: rows.length,
+    filteredCount,
+    duplicateCount,
+    pageCount,
+    stoppedByRepeat,
+    firstPageEmpty,
+    healthy: health.healthy,
+    healthReason: health.reason,
+    elapsedMs: Date.now() - startedAt,
+  };
+}
+
+async function getPresetSyncState(preset: LeaderboardPreset): Promise<{ previousCount: number; syncVersion: number }> {
+  const aggregate = await prisma.leaderboardRow.aggregate({
+    where: {
+      category: preset.category,
+      timePeriod: preset.timePeriod,
+      orderBy: preset.orderBy,
+    },
+    _count: { _all: true },
+    _max: { syncVersion: true },
+  });
+
+  return {
+    previousCount: aggregate._count._all,
+    syncVersion: (aggregate._max.syncVersion ?? 0) + 1,
+  };
+}
+
+async function pruneStaleOfficialLeaderboardBatches(batchId: string, results: PresetFetchResult[]): Promise<number> {
+  let deletedRows = 0;
+
+  for (const { preset } of results) {
+    for (;;) {
+      const staleRows = await prisma.leaderboardRow.findMany({
+        where: {
+          category: preset.category,
+          timePeriod: preset.timePeriod,
+          orderBy: preset.orderBy,
+          batchId: { not: batchId },
+        },
+        select: { id: true },
+        orderBy: { id: 'asc' },
+        take: LEADERBOARD_DELETE_CHUNK_SIZE,
+      });
+
+      if (staleRows.length === 0) {
+        break;
+      }
+
+      const deleted = await prisma.leaderboardRow.deleteMany({
+        where: { id: { in: staleRows.map((row) => row.id) } },
+      });
+      deletedRows += deleted.count;
+      if (staleRows.length < LEADERBOARD_DELETE_CHUNK_SIZE) {
+        break;
+      }
+    }
+  }
+
+  return deletedRows;
+}
+
+async function applyOfficialLeaderboardBatch(
+  batchId: string,
+  results: PresetFetchResult[]
+): Promise<{ writtenRows: number; deletedRows: number }> {
+  const rows = results.flatMap((result) => result.rows);
+  let writtenRows = 0;
+
+  for (let offset = 0; offset < rows.length; offset += LEADERBOARD_CREATE_CHUNK_SIZE) {
+    const chunk = rows.slice(offset, offset + LEADERBOARD_CREATE_CHUNK_SIZE);
+    if (chunk.length === 0) {
+      continue;
+    }
+    const result = await prisma.leaderboardRow.createMany({
+      data: chunk,
+      skipDuplicates: true,
+    });
+    writtenRows += result.count;
+  }
+
+  const deletedRows = await pruneStaleOfficialLeaderboardBatches(batchId, results);
+  return { writtenRows, deletedRows };
+}
+
+/**
+ * 鎸?CONFIG.leaderboardSyncPresets 涓茶鎷夊彇锛屽叏閮?preset 鍋ュ悍鏃舵墠鏁存壒鍒囨崲銆? * 褰撳墠浠呮湁鍗曡繘绋嬪唴闃查噸鍏ワ紱鑻ラ儴缃插鍓湰锛屽簲閰嶅悎澶栭儴閿侀伩鍏嶉噸澶嶆姄鍙栥€? */
+export async function runLeaderboardSync(): Promise<void> {
+  if (syncRunning) return;
+  syncRunning = true;
+  const gapMs = CONFIG.leaderboardRequestGapMs;
+  const presets = CONFIG.leaderboardSyncPresets;
+  const syncStartedAt = Date.now();
+  const batchSyncedAt = new Date();
+  const batchId = createLeaderboardBatchId(batchSyncedAt);
+  let officialBatchApplied = false;
+
+  try {
+    console.log('[leaderboard-cron] sync started', {
+      presetCount: presets.length,
+      pageLimit: PAGE_LIMIT,
+      maxRowsPerPreset: MAX_ROWS_PER_PRESET,
+      gapMs,
+      batchId,
+    });
+
+    const presetResults: PresetFetchResult[] = [];
+    for (const preset of presets) {
+      const presetStartedAt = Date.now();
+      try {
+        const syncState = await getPresetSyncState(preset);
+        const result = await fetchAllPagesForPreset(
+          preset,
+          gapMs,
+          batchId,
+          batchSyncedAt,
+          syncState.syncVersion,
+          syncState.previousCount
+        );
+        presetResults.push(result);
+        const logPrefix = result.healthy ? '[leaderboard-cron] preset fetched' : '[leaderboard-cron] preset unhealthy';
+        console[result.healthy ? 'log' : 'warn'](logPrefix, {
+          preset,
+          batchId,
+          syncVersion: result.syncVersion,
+          previousCount: result.previousCount,
+          fetchedCount: result.fetchedCount,
+          acceptedCount: result.acceptedCount,
+          filteredCount: result.filteredCount,
+          duplicateCount: result.duplicateCount,
+          pageCount: result.pageCount,
+          stoppedByRepeat: result.stoppedByRepeat,
+          firstPageEmpty: result.firstPageEmpty,
+          healthy: result.healthy,
+          healthReason: result.healthReason,
+          elapsed: formatDurationMs(result.elapsedMs),
+        });
+      } catch (err) {
+        console.warn('[leaderboard-cron] preset failed', {
+          preset,
+          elapsed: formatDurationMs(Date.now() - presetStartedAt),
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    const healthyResults = presetResults.filter((result) => result.healthy);
+    if (healthyResults.length > 0) {
+      const applied = await applyOfficialLeaderboardBatch(batchId, healthyResults);
+      officialBatchApplied = true;
+      console.log('[leaderboard-cron] official batch applied (partial ok)', {
+        batchId,
+        appliedPresetCount: healthyResults.length,
+        expectedPresetCount: presets.length,
+        rowCount: applied.writtenRows,
+        deletedRows: applied.deletedRows,
+      });
+    }
+
+    if (healthyResults.length !== presets.length) {
+      const unhealthy = presetResults
+        .filter((result) => !result.healthy)
+        .map((result) => ({
+          preset: getPresetLabel(result.preset),
+          reason: result.healthReason,
+        }));
+      const missingPresets = presets
+        .filter(
+          (preset) =>
+            !presetResults.some((result) => getPresetLabel(result.preset) === getPresetLabel(preset)),
+        )
+        .map((preset) => getPresetLabel(preset));
+
+      console.warn('[leaderboard-cron] official batch incomplete', {
+        batchId,
+        fetchedPresetCount: presetResults.length,
+        expectedPresetCount: presets.length,
+        appliedPresetCount: healthyResults.length,
+        unhealthy,
+        missingPresets,
+      });
+    }
+
+    try {
+      const externalResults = await syncPredictingTopLeaderboards({
+        delayBetweenPeriodsMs: gapMs,
+      });
+      for (const result of externalResults) {
+        console.log('[leaderboard-cron] external predicting.top synced', {
+          period: result.period,
+          syncVersion: result.syncVersion,
+          fetchedCount: result.fetchedCount,
+          rowCount: result.rowCount,
+        });
+      }
+    } catch (err) {
+      console.warn('[leaderboard-cron] external predicting.top sync failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  } finally {
+    console.log('[leaderboard-cron] sync finished', {
+      elapsed: formatDurationMs(Date.now() - syncStartedAt),
+      officialBatchApplied,
+      batchId,
+    });
+
+    if (officialBatchApplied && CONFIG.smartMoneyCronEnabled) {
+      try {
+        const stats = await runSmartMoneyCandidatePipeline('leaderboard-sync', {
+          fetchMode: 'follow-up',
+          fetchLimit: CONFIG.smartMoneyLeaderboardSyncFetchLimit,
+        });
+        console.log('[leaderboard-cron] smart-money follow-up finished', {
+          candidateSynced: stats?.candidateSynced ?? null,
+          fetchExecuted: stats?.fetchExecuted ?? null,
+          candidateCount: stats?.candidateCount ?? null,
+          fetchPicked: stats?.fetchPicked ?? null,
+          fetchSuccessCount: stats?.fetchSuccessCount ?? null,
+          fetchFailureCount: stats?.fetchFailureCount ?? null,
+          scoreWrittenCount: stats?.scoreWrittenCount ?? null,
+          rankedCount: stats?.rankedCount ?? null,
+          bootstrapRemainingCount: stats?.bootstrapRemainingCount ?? null,
+          elapsedMs: stats?.elapsedMs ?? null,
+        });
+      } catch (err) {
+        // NOTE: smart-money follow-up failures used to be silent, which makes test env debugging painful.
+        // Keep this log terse; detailed per-wallet failures are handled inside smart-money pipeline.
+        console.warn('[leaderboard-cron] smart-money follow-up failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    syncRunning = false;
+  }
+}

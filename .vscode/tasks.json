@@ -1,0 +1,27 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "deploy:test:pack",
+      "type": "npm",
+      "script": "deploy:test:pack",
+      "path": "polymarket-backend",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    },
+    {
+      "label": "deploy:test",
+      "type": "npm",
+      "script": "deploy:test",
+      "path": "polymarket-backend",
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared"
+      }
+    }
+  ]
+}

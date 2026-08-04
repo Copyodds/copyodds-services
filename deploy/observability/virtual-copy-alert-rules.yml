@@ -1,0 +1,91 @@
+groups:
+  - name: polycopy-virtual-copy
+    rules:
+      - alert: VirtualCopyQueueBacklog
+        expr: polycopy_virtual_copy_queue_oldest_age_seconds > 60
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Virtual-copy queue is delayed
+          description: Oldest due execution has waited more than 60 seconds for 10 minutes.
+
+      - alert: VirtualCopyQueueStalled
+        expr: polycopy_virtual_copy_queue_oldest_age_seconds > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Virtual-copy queue appears stalled
+          description: Oldest due execution has waited more than five minutes.
+
+      - alert: VirtualCopyDeadExecutions
+        expr: increase(polycopy_virtual_copy_executions_total{status="dead"}[10m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Virtual-copy executions reached DEAD
+
+      - alert: VirtualCopyExternalDependencyErrors
+        expr: |
+          (
+            sum by (service) (rate(polycopy_virtual_copy_external_request_duration_seconds_count{result=~"error|http_error|timeout"}[10m]))
+            /
+            clamp_min(sum by (service) (rate(polycopy_virtual_copy_external_request_duration_seconds_count[10m])), 0.001)
+          ) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Virtual-copy external dependency error rate is high
+
+      - alert: VirtualCopyMarkPriceDegraded
+        expr: increase(polycopy_virtual_copy_degradation_total{component="mark_price"}[15m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Virtual-copy mark prices are frequently degraded
+
+      - alert: VirtualCopyReplayLag
+        expr: polycopy_virtual_copy_replay_lag_seconds > 300
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Virtual-copy durable replay is lagging
+
+      - alert: VirtualCopyStaleClaims
+        expr: increase(polycopy_virtual_copy_stale_claims_total[15m]) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: Virtual-copy workers are recovering stale claims
+
+      - alert: VirtualCopyReconciliationDrift
+        expr: sum(polycopy_virtual_copy_reconciliation_drift) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Virtual-copy reconciliation detected integrity drift
+
+      - alert: VirtualCopyWorkerMissing
+        expr: time() - polycopy_virtual_copy_worker_last_success_timestamp_seconds > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: A virtual-copy worker loop has not succeeded recently
+
+      - alert: VirtualCopyLockContention
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, lock) (rate(polycopy_virtual_copy_lock_wait_seconds_bucket[10m]))
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Virtual-copy database lock waits are elevated

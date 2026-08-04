@@ -1,0 +1,2506 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Wallet {
+  id      Int    @id @default(autoincrement())
+  address String @unique
+  userId  Int?
+  user    User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  /// Go wallet-api 业务序号（v3 不参与密码学路径；GO_REMOTE 必填）
+  walletIndex       Int?
+  /// v2_hd | v3_refer_pass
+  derivationScheme  String  @default("v3_refer_pass")
+  /// v2 迁移前的旧托管地址（归档）
+  supersededAddress String?
+  /// 托管签名：仅支持 GO_REMOTE（Go wallet-api + 远程签名）
+  signingProvider   String  @default("GO_REMOTE")
+
+  // 钱包类型：普通用户自托管地址 / 平台托管子钱包
+  type String @default("USER_EOA")
+
+  custodialKeys UserCustodialKey[]
+
+  /// 该钱包在 Polymarket CLOB 上的 API 凭证（与托管私钥一一对应）
+  apiCredential ApiCredential?
+
+  /// Polymarket CLOB `funder` / maker：signature type 3（POLY_1271 / deposit wallet）时为官方 deposit 合约地址；也可用于 1/2 时与签名地址不同的 proxy/Safe
+  polymarketFunderAddress           String?
+  /// Deposit wallet SELL 授权准备的持久化缓存；命中时可跳过 relayer 注册/链上 allowance 扫描。
+  polymarketSellPrepReadyAt         DateTime?
+  polymarketSellPrepDeposit         String?
+  /// Polymarket Relayer WALLET-CREATE 提交成功后的 transactionID（submit 后立即写入；wait 失败/超时时仍保留）。
+  polymarketWalletCreateRelayerTxId String?
+
+  createdAt DateTime @default(now())
+
+  custodyChainDeposits CustodyChainDeposit[]
+}
+
+/// 链上 USDC 转入托管地址的记录（扫块写入；不自动增加站内 UserAsset）
+model CustodyChainDeposit {
+  id          String   @id @default(cuid())
+  userId      Int
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  walletId    Int
+  wallet      Wallet   @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  txHash      String
+  logIndex    Int
+  fromAddress String
+  toAddress   String
+  amountRaw   String
+  blockNumber BigInt
+  confirmedAt DateTime @default(now())
+
+  @@unique([txHash, logIndex])
+  @@index([userId, confirmedAt])
+  @@index([toAddress, confirmedAt])
+}
+
+/// 扫块游标（单例 id = polygon_usdc）
+model CustodyDepositScanCursor {
+  id        String   @id
+  lastBlock BigInt
+  updatedAt DateTime @updatedAt
+}
+
+enum CustodyWithdrawStatus {
+  PENDING
+  BROADCASTED
+  FAILED
+}
+
+/// EOA 充值后自动归集至 Polymarket funder 的任务状态
+enum CustodyEoaForwardStatus {
+  PENDING
+  IN_PROGRESS
+  PENDING_GAS
+  COMPLETED
+  FAILED
+}
+
+/// EOA 入账后 custodial → funder 自动划转任务（运营补给 MATIC 后由 retry cron 重试）
+model CustodyEoaForwardJob {
+  id              String                  @id @default(cuid())
+  userId          Int
+  user            User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status          CustodyEoaForwardStatus @default(PENDING)
+  triggerTxHash   String?
+  triggerLogIndex Int?
+  idempotencyKey  String
+  lastError       String?
+  attempts        Int                     @default(0)
+  completedAt     DateTime?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  @@unique([userId, idempotencyKey])
+  @@index([status, updatedAt])
+  @@index([userId, createdAt])
+}
+
+/// Polymarket deposit（USDC.e）经 Relayer 提现至用户指定地址；与 CustodyWithdrawRequest 分离。
+enum PolymarketDepositWithdrawStatus {
+  PENDING
+  RELAYER_SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
+model PolymarketDepositWithdrawRequest {
+  id                   String                          @id @default(cuid())
+  userId               Int
+  user                 User                            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  idempotencyKey       String
+  depositAddress       String
+  toAddress            String
+  amountRaw            String
+  amount               Decimal                         @db.Decimal(38, 18)
+  status               PolymarketDepositWithdrawStatus @default(PENDING)
+  relayerTransactionId String?
+  chainTxHash          String?
+  error                String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, status])
+  @@index([userId, createdAt])
+}
+
+/// 链上提现请求（幂等 + 可恢复）。同一 userId + idempotencyKey 只会广播一次。
+model CustodyWithdrawRequest {
+  id     String @id @default(cuid())
+  userId Int
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// 客户端传入或服务端生成的幂等键（建议前端重试复用）
+  idempotencyKey String
+
+  fromAddress String
+  toAddress   String
+  amountRaw   String
+  amount      Decimal @db.Decimal(38, 18)
+
+  status CustodyWithdrawStatus @default(PENDING)
+  txHash String?
+  error  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, idempotencyKey])
+  @@index([userId, createdAt])
+  @@index([txHash])
+}
+
+/// 用户钱包统一流水（append-only；与 BillingLedger 并存，偏用户端展示）
+model UserWalletLedger {
+  id             String   @id @default(cuid())
+  userId         Int
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  occurredAt     DateTime @default(now())
+  /// ONCHAIN_USDC | INTERNAL_USDC_E | GAS_POINTS
+  rail           String
+  /// CREDIT | DEBIT | LOCK | UNLOCK
+  direction      String
+  amount         Decimal  @db.Decimal(38, 18)
+  symbol         String   @default("USDC.e")
+  category       String
+  refType        String?
+  refId          String?
+  idempotencyKey String?  @unique
+  balanceAfter   Decimal? @db.Decimal(38, 18)
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  @@index([userId, occurredAt])
+  @@index([userId, category])
+}
+
+model User {
+  id                    Int       @id @default(autoincrement())
+  username              String    @unique
+  email                 String?   @unique
+  emailVerified         Boolean   @default(false)
+  firstName             String?
+  lastName              String?
+  termsAcceptedAt       DateTime?
+  tradingDisabled       Boolean   @default(false)
+  tradingDisabledReason String?
+  tradingDisabledUntil  DateTime?
+
+  /// NORMAL | FROZEN | REVIEW
+  tradeStatus       String    @default("NORMAL")
+  frozenReason      String?
+  frozenRemark      String?
+  frozenAt          DateTime?
+  frozenUntil       DateTime?
+  frozenByAdminId   String?
+  unfrozenAt        DateTime?
+  unfrozenByAdminId String?
+  unfrozenRemark    String?
+  riskReviewReason  String?
+  riskUpdatedAt     DateTime?
+
+  userRiskLogs UserRiskLog[]
+
+  // 钱包关联
+  wallets                           Wallet[]
+  walletDerivationCredential        WalletDerivationCredential?
+  custodyWithdrawRequests           CustodyWithdrawRequest[]
+  custodyEoaForwardJobs             CustodyEoaForwardJob[]
+  polymarketDepositWithdrawRequests PolymarketDepositWithdrawRequest[]
+  dailyActivities                   UserDailyActivity[]
+
+  // 推广关系（树形）
+  inviteCode                  String    @unique
+  /// 旧版钱包密码，仅供一次性迁移；新签名链路不得读取。
+  encryptedWalletPassword     String?
+  /// v3 迁移状态: PENDING | COMPLETED
+  walletDeriveMigrationStatus String    @default("PENDING")
+  referrerId                  Int?
+  referrer                    User?     @relation("UserReferrer", fields: [referrerId], references: [id])
+  referrals                   User[]    @relation("UserReferrer")
+  referralPath                String?
+  referrerBoundAt             DateTime?
+  referrerBindSource          String?
+  referrerLockedAt            DateTime?
+
+  // 推广档位（合伙人等级），1~5 表示不同分成比例，null 或 0 表示普通用户
+  affiliateTier Int?
+  affiliateNote String?
+
+  // 平台 Gas 余额
+  gasBalance Decimal @default(0) @db.Decimal(38, 18)
+
+  // Gas 相关记录
+  gasOrders                GasOrder[]
+  gasBalanceLogs           GasBalanceLog[]
+  shareToXGasClaims        ShareToXGasClaim[]
+  commissionsFrom          GasCommission[]        @relation("CommissionFromUser")
+  commissionsTo            GasCommission[]        @relation("CommissionToUser")
+  mallCommissionAccount    MallCommissionAccount?
+  mallCommissionEntries    MallCommissionLedger[]
+  mallOrderCommissionsFrom MallOrderCommission[]  @relation("MallOrderCommissionFromUser")
+  mallOrderCommissionsTo   MallOrderCommission[]  @relation("MallOrderCommissionToUser")
+  referralBindingAudits    ReferralBindingAudit[] @relation("ReferralBindingUser")
+  referralReceivedAudits   ReferralBindingAudit[] @relation("ReferralBindingReferrer")
+
+  // 商店套餐订单
+  gasPackageOrders    GasPackageOrder[]
+  affiliateTierOrders AffiliateTierOrder[]
+
+  // 托管相关
+  custodialKeys UserCustodialKey[]
+  assets        UserAsset[]
+  balanceCache  UserBalanceCache?
+
+  // Polymarket CLOB API 凭证（按 USER_EOA 钱包；secret/passphrase 加密存储）
+  apiCredentials ApiCredential[]
+
+  polymarketRedeemLogs          PolymarketRedeemLog[]
+  polymarketRedeemAttemptStates PolymarketRedeemAttemptState[]
+  positionScanState             UserPositionScanState?
+
+  sessions           UserSession[]
+  settings           UserSettings?
+  passkeyCredentials PasskeyCredential[]
+
+  // Authenticator TOTP (withdraw step-up only; secrets encrypted at rest)
+  totpSecretEncrypted        String?
+  totpEnabledAt              DateTime?
+  totpPendingSecretEncrypted String?
+  totpPendingCreatedAt       DateTime?
+
+  copySubscriptions        CopySubscription[]
+  copyTradeRows            CopyTradeRow[]
+  copyPnlEvents            UserCopyPnlEvent[]
+  copyPnlDailyRows         UserCopyPnlDaily[]
+  virtualCopyAccounts      VirtualCopyAccount[]
+  virtualCopySubscriptions VirtualCopySubscription[]
+  virtualCopyExecutions    VirtualCopyExecution[]
+  virtualPositionLots      VirtualPositionLot[]
+  virtualPositionLotCloses VirtualPositionLotClose[]
+  virtualAccountLedgers    VirtualAccountLedger[]
+  virtualCloseQuotes       VirtualPositionCloseQuote[]
+  auditEvents              AuditEvent[]
+  riskEvents               RiskEvent[]
+  billingLedgerEntries     BillingLedger[]
+  userWalletLedgerEntries  UserWalletLedger[]
+
+  custodyChainDeposits CustodyChainDeposit[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([referrerId])
+}
+
+/// 按 invite/referCode 存储的明文 wallet_password（Node 签名时回传给 Go）。
+/// cipher 列存明文密码；version>=2 表示明文存储（旧版 aes-256-gcm.* 需迁移脚本回写）。
+model WalletDerivationCredential {
+  referCode String   @id
+  userId    Int?     @unique
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  cipher    String
+  version   Int      @default(1)
+  scheme    String   @default("v3_refer_pass")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model PasskeyCredential {
+  id             Int       @id @default(autoincrement())
+  userId         Int
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  credentialId   String    @unique @db.VarChar(256)
+  publicKey      Bytes
+  algorithm      Int
+  aaguid         String?   @db.VarChar(36)
+  label          String?   @db.VarChar(128)
+  signCount      Int       @default(0) @map("sign_count")
+  backupEligible Boolean   @default(false)
+  backupState    Boolean   @default(false)
+  cloneWarning   Boolean   @default(false)
+  transports     String?   @db.VarChar(128)
+  lastUsedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("passkey_credentials")
+}
+
+model PasskeyChallenge {
+  requestId String   @id @db.VarChar(64)
+  userId    Int
+  kind      Int
+  challenge String   @db.VarChar(128)
+  expiresAt DateTime
+
+  @@unique([userId, kind])
+  @@map("passkey_challenges")
+}
+
+model UserSettings {
+  userId Int  @id
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  displayPnlInUsd Boolean @default(true)
+  showDemoData    Boolean @default(true)
+
+  securityNoticeSeenAt DateTime?
+
+  /// pnl-summary 持久化缓存，避免 40 万+ copy_trades 每次 SUM 聚合
+  copyPnlTotalUsd      Decimal?  @db.Decimal(38, 18)
+  copyPnlTodayUsd      Decimal?  @db.Decimal(38, 18)
+  copyPnlWindowStartAt DateTime?
+  copyPnlComputedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum AdminUserStatus {
+  ACTIVE
+  DISABLED
+}
+
+model AdminUser {
+  id                         String          @id @default(uuid())
+  email                      String          @unique
+  passwordHash               String
+  name                       String?
+  status                     AdminUserStatus @default(ACTIVE)
+  /// SUPER_ADMIN | ADMIN
+  role                       String          @default("SUPER_ADMIN")
+  /// e.g. user.manage
+  permissions                String[]        @default([])
+  lastLoginAt                DateTime?
+  totpSecretEncrypted        String?
+  totpEnabledAt              DateTime?
+  totpPendingSecretEncrypted String?
+  totpPendingCreatedAt       DateTime?
+  createdAt                  DateTime        @default(now())
+  updatedAt                  DateTime        @updatedAt
+
+  sessions         AdminSession[]
+  actionLogs       AdminActionLog[]
+  systemControls   SystemControl[]
+  leaderRiskStates LeaderRiskState[]
+}
+
+enum TradingSystemMode {
+  NORMAL
+  TRACK_ONLY
+  PAUSED
+}
+
+enum LeaderRiskStatus {
+  ACTIVE
+  WATCHLIST
+  DISABLED
+}
+
+enum TraderStatus {
+  ACTIVE
+  DISABLED
+  REVIEW
+}
+
+enum TraderSource {
+  MANUAL
+  SYSTEM
+  IMPORT
+}
+
+model Trader {
+  id               String       @id @default(uuid())
+  name             String
+  label            String?
+  avatarUrl        String?
+  description      String?
+  status           TraderStatus @default(ACTIVE)
+  source           TraderSource @default(MANUAL)
+  createdByAdminId String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  leaders CopyLeader[] @relation("TraderLeaders")
+
+  @@index([status, createdAt])
+  @@index([source, createdAt])
+  @@map("traders")
+}
+
+enum LeaderStatus {
+  ACTIVE
+  DISABLED
+  REVIEW
+}
+
+enum LeaderSource {
+  MANUAL
+  SYSTEM
+  IMPORT
+}
+
+enum LeaderRiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+/// 跟单池中的 leader 地址（与链上监听过滤一致）
+model CopyLeader {
+  id          String          @id @default(uuid())
+  address     String          @unique
+  /// 链名称（目前默认 POLYGON）
+  chain       String          @default("POLYGON")
+  /// 后台展示用标签
+  label       String?
+  /// ACTIVE/DISABLED/REVIEW（与 enabled 并存，enabled 用于现有引擎开关）
+  status      LeaderStatus    @default(ACTIVE)
+  /// MANUAL/SYSTEM/IMPORT
+  source      LeaderSource    @default(SYSTEM)
+  /// LOW/MEDIUM/HIGH
+  riskLevel   LeaderRiskLevel @default(LOW)
+  lastTradeAt DateTime?
+
+  traderId String?
+  trader   Trader? @relation("TraderLeaders", fields: [traderId], references: [id], onDelete: SetNull)
+
+  createdByAdminId String?
+  enabled          Boolean  @default(true)
+  tags             String[] @default([])
+  /// Phase 2：最近一次聪明钱评分快照
+  smartMoneyScore  Decimal? @db.Decimal(20, 8)
+  copyabilityScore Decimal? @db.Decimal(20, 8)
+  /// Smart Money 展示名快照（跟单列表读路径，避免联表）
+  displayName      String?
+  /// Smart Money X 用户名快照（无 @）
+  xUsername        String?
+  /// 产品档位快照 S|A|B|C|D
+  tier             String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  subscriptions        CopySubscription[]
+  virtualSubscriptions VirtualCopySubscription[]
+  leaderTrades         LeaderTrade[]
+  riskState            LeaderRiskState?
+  riskEvents           RiskEvent[]
+
+  @@index([traderId, createdAt])
+  @@index([status, createdAt])
+  @@index([source, createdAt])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAUSED
+  EXPIRED
+  CANCELLED
+}
+
+/// 用户对某 leader 的订阅参数（合并原 CopyRelation + FollowStrategy 能力）
+model CopySubscription {
+  id       String     @id @default(uuid())
+  userId   Int
+  user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  leaderId String
+  leader   CopyLeader @relation(fields: [leaderId], references: [id], onDelete: Cascade)
+
+  /// ACTIVE/PAUSED/EXPIRED/CANCELLED（后台管理用；enabled 仍作为运行时权威开关）
+  status SubscriptionStatus @default(ACTIVE)
+
+  ruleName                   String?
+  note                       String?
+  copyMode                   CopyMode @default(RATIO)
+  copyRatio                  Decimal  @default(1) @db.Decimal(10, 6)
+  fixedAmountUsd             Decimal? @db.Decimal(38, 18)
+  minNotionalMode            String   @default("BUMP_TO_MIN")
+  minAmountUsd               Decimal? @db.Decimal(38, 18)
+  maxAmount                  Decimal? @db.Decimal(38, 18)
+  maxAmountPerMarketUsd      Decimal? @db.Decimal(38, 18)
+  dailyTotalCapUsd           Decimal? @db.Decimal(38, 18)
+  slippage                   Decimal? @db.Decimal(10, 6)
+  delayMs                    Int      @default(0)
+  marketCooldownMinutes      Int?
+  pauseAfterConsecutiveFails Int?
+  /// 同一订阅同一 outcome 已有未平仓跟单仓位时，跳过后续 BUY（防加仓耗尽资金；新手友好默认开）
+  skipBuyIfOpenPosition      Boolean  @default(true)
+  onlyBuy                    Boolean  @default(false)
+  onlySell                   Boolean  @default(false)
+  enabled                    Boolean  @default(true)
+
+  /// 最大 Gas 限制（后台管理配置）
+  maxGas      Decimal?  @db.Decimal(38, 18)
+  /// 生命周期时间戳（后台展示/筛选）
+  startedAt   DateTime?
+  expiredAt   DateTime?
+  pausedAt    DateTime?
+  cancelledAt DateTime?
+
+  /// 连续失败计数（Postgres 风控，替代 Redis fail streak）
+  failStreakCount      Int       @default(0)
+  failStreakUpdatedAt  DateTime?
+  pausedUntil          DateTime?
+  pauseReason          String?
+  /// 资金不足自动暂停元数据（enabled=false 为权威状态）
+  fundingPausedAt      DateTime?
+  fundingPausedCode    String?
+  fundingPausedReason  String?
+  /// 资金不足但仍保留监听（例如仍有可卖持仓）
+  fundingWarningAt     DateTime?
+  fundingWarningCode   String?
+  fundingWarningReason String?
+  deletedAt            DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  copyTrades      CopyTradeRow[]
+  riskEvents      RiskEvent[]
+  marketCooldowns CopyMarketCooldown[]
+
+  @@unique([userId, leaderId])
+  @@index([leaderId])
+  @@index([userId, fundingPausedAt])
+  @@index([userId, fundingPausedCode])
+  @@index([userId, fundingWarningCode])
+  @@index([userId, deletedAt])
+}
+
+/// 链上 OrderFilled 落库（幂等：leaderAddress + tx_hash + log_index）
+model LeaderTrade {
+  id              String   @id @default(uuid())
+  leaderAddress   String
+  txHash          String
+  logIndex        Int
+  sourceFillCount Int      @default(1)
+  signalSource    String   @default("order_filled")
+  side            String
+  amount          String
+  price           String
+  marketId        String?
+  marketTitle     String?
+  tokenId         String
+  outcome         String?
+  maker           String
+  taker           String
+  makerAssetId    String   @default("")
+  takerAssetId    String   @default("")
+  blockNumber     Int?
+  processed       Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  leaderId String?
+  leader   CopyLeader? @relation(fields: [leaderId], references: [id], onDelete: SetNull)
+
+  copyTrades        CopyTradeRow[]
+  virtualExecutions VirtualCopyExecution[]
+  riskEvents        RiskEvent[]
+
+  @@unique([leaderAddress, txHash, logIndex])
+  @@index([leaderAddress])
+  @@index([leaderAddress, txHash])
+  @@index([tokenId])
+  @@index([createdAt])
+  // Replay/archive sweeps filter on processed + createdAt; without this the
+  // sweep seq-scans the whole table and holds a pool connection for 20s+.
+  @@index([processed, createdAt])
+}
+
+enum CopyTradeStatus {
+  queued
+  risk_pending
+  skipped
+  submitting
+  submitted
+  filled
+  failed
+  dead
+}
+
+enum CopyMode {
+  RATIO
+  FIXED_AMOUNT
+  SMART
+}
+
+enum TradeSide {
+  BUY
+  SELL
+}
+
+enum VirtualAccountStatus {
+  ACTIVE
+  PAUSED
+  EXPIRED_CLOSING
+  SETTLED
+  ARCHIVED
+}
+
+enum VirtualExecutionStatus {
+  QUEUED
+  SIMULATING
+  FILLED
+  PARTIALLY_FILLED
+  SKIPPED
+  FAILED
+  DEAD
+  SETTLED
+}
+
+model VirtualCopyAccount {
+  id                 String               @id @default(uuid())
+  userId             Int
+  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name               String
+  currency           String               @default("USD")
+  initialBalanceUsd  Decimal              @db.Decimal(38, 18)
+  cashBalanceUsd     Decimal              @db.Decimal(38, 18)
+  reservedBalanceUsd Decimal              @default(0) @db.Decimal(38, 18)
+  realizedPnlUsd     Decimal              @default(0) @db.Decimal(38, 18)
+  status             VirtualAccountStatus @default(ACTIVE)
+  startedAt          DateTime             @default(now())
+  expiresAt          DateTime
+  expiredAt          DateTime?
+  settledAt          DateTime?
+  archivedAt         DateTime?
+  version            Int                  @default(0)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  subscriptions   VirtualCopySubscription[]
+  executions      VirtualCopyExecution[]
+  lots            VirtualPositionLot[]
+  lotCloses       VirtualPositionLotClose[]
+  ledgerEntries   VirtualAccountLedger[]
+  equitySnapshots VirtualAccountEquitySnapshot[]
+  closeQuotes     VirtualPositionCloseQuote[]
+
+  @@unique([userId, name])
+  @@index([userId, status, createdAt])
+  @@index([status, expiresAt])
+}
+
+model VirtualCopySubscription {
+  id                         String             @id @default(uuid())
+  accountId                  String
+  account                    VirtualCopyAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  userId                     Int
+  user                       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  leaderId                   String
+  leader                     CopyLeader         @relation(fields: [leaderId], references: [id], onDelete: Restrict)
+  ruleName                   String?
+  note                       String?
+  copyMode                   CopyMode           @default(RATIO)
+  copyRatio                  Decimal            @default(1) @db.Decimal(10, 6)
+  fixedAmountUsd             Decimal?           @db.Decimal(38, 18)
+  minNotionalMode            String             @default("BUMP_TO_MIN")
+  minAmountUsd               Decimal?           @db.Decimal(38, 18)
+  maxAmountUsd               Decimal?           @db.Decimal(38, 18)
+  maxAmountPerMarketUsd      Decimal?           @db.Decimal(38, 18)
+  dailyTotalCapUsd           Decimal?           @db.Decimal(38, 18)
+  maxSlippage                Decimal?           @db.Decimal(10, 6)
+  delayMs                    Int                @default(0)
+  marketCooldownMinutes      Int?
+  pauseAfterConsecutiveFails Int?
+  /// 同一订阅同一 outcome 已有未平仓虚拟仓位时，跳过后续 BUY
+  skipBuyIfOpenPosition      Boolean            @default(true)
+  onlyBuy                    Boolean            @default(false)
+  onlySell                   Boolean            @default(false)
+  enabled                    Boolean            @default(true)
+  status                     SubscriptionStatus @default(ACTIVE)
+  startedAt                  DateTime           @default(now())
+  pausedAt                   DateTime?
+  expiredAt                  DateTime?
+  deletedAt                  DateTime?
+  failStreakCount            Int                @default(0)
+  failStreakUpdatedAt        DateTime?
+  pausedUntil                DateTime?
+  pauseReason                String?
+  createdAt                  DateTime           @default(now())
+  updatedAt                  DateTime           @updatedAt
+
+  executions VirtualCopyExecution[]
+  lots       VirtualPositionLot[]
+  lotCloses  VirtualPositionLotClose[]
+
+  @@unique([accountId, leaderId])
+  @@index([leaderId, enabled])
+  @@index([userId, accountId, deletedAt])
+}
+
+model VirtualCopyExecution {
+  id                   String                  @id @default(uuid())
+  userId               Int
+  user                 User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId            String
+  account              VirtualCopyAccount      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  subscriptionId       String
+  subscription         VirtualCopySubscription @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  leaderTradeId        String?
+  leaderTrade          LeaderTrade?            @relation(fields: [leaderTradeId], references: [id], onDelete: SetNull)
+  leaderId             String
+  leaderAddress        String
+  marketId             String?
+  marketTitle          String?
+  tokenId              String
+  outcome              String?
+  side                 TradeSide
+  status               VirtualExecutionStatus  @default(QUEUED)
+  leaderPrice          Decimal                 @db.Decimal(38, 18)
+  targetSize           Decimal                 @db.Decimal(38, 18)
+  targetNotionalUsd    Decimal                 @db.Decimal(38, 18)
+  maxSlippage          Decimal?                @db.Decimal(10, 6)
+  simulatedFillSize    Decimal?                @db.Decimal(38, 18)
+  simulatedAvgPrice    Decimal?                @db.Decimal(38, 18)
+  simulatedNotionalUsd Decimal?                @db.Decimal(38, 18)
+  simulatedFeeUsd      Decimal?                @db.Decimal(38, 18)
+  feeRate              Decimal?                @db.Decimal(10, 8)
+  feeModelVersion      String?
+  slippageAmountUsd    Decimal?                @db.Decimal(38, 18)
+  slippageBps          Int?
+  limitPrice           Decimal?                @db.Decimal(38, 18)
+  unfilledSize         Decimal?                @db.Decimal(38, 18)
+  fillModel            String
+  priceSource          String
+  executionSource      String                  @default("LEADER_SIGNAL")
+  priceObservedAt      DateTime?
+  priceStalenessMs     Int?
+  orderBookEvidence    Json?
+  settlementEvidence   Json?
+  idempotencyKey       String?                 @unique
+  configSnapshot       Json
+  errorCode            String?
+  errorMessage         String?
+  retryCount           Int                     @default(0)
+  scheduledAt          DateTime
+  claimedAt            DateTime?
+  claimToken           String?
+  claimExpiresAt       DateTime?
+  filledAt             DateTime?
+  settledAt            DateTime?
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+
+  openedLot    VirtualPositionLot?       @relation("VirtualBuyExecution")
+  lotCloses    VirtualPositionLotClose[] @relation("VirtualSellExecution")
+  buyLotCloses VirtualPositionLotClose[] @relation("VirtualBuyExecutionCloses")
+
+  @@unique([leaderTradeId, subscriptionId])
+  @@index([accountId, status, createdAt])
+  @@index([accountId, tokenId, createdAt])
+  @@index([subscriptionId, status, updatedAt])
+  @@index([status, scheduledAt])
+  @@index([status, claimExpiresAt])
+}
+
+model VirtualPositionLot {
+  id               String                  @id @default(uuid())
+  userId           Int
+  user             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId        String
+  account          VirtualCopyAccount      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  subscriptionId   String
+  subscription     VirtualCopySubscription @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  leaderId         String
+  leaderAddress    String
+  marketId         String?
+  tokenId          String
+  buyExecutionId   String                  @unique
+  buyExecution     VirtualCopyExecution    @relation("VirtualBuyExecution", fields: [buyExecutionId], references: [id], onDelete: Restrict)
+  entryPrice       Decimal                 @db.Decimal(38, 18)
+  entrySize        Decimal                 @db.Decimal(38, 18)
+  remainingSize    Decimal                 @db.Decimal(38, 18)
+  entryNotionalUsd Decimal                 @db.Decimal(38, 18)
+  entryFeeUsd      Decimal                 @default(0) @db.Decimal(38, 18)
+  status           String                  @default("OPEN")
+  openedAt         DateTime
+  closedAt         DateTime?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+
+  closes VirtualPositionLotClose[]
+
+  @@index([accountId, tokenId, remainingSize])
+  @@index([subscriptionId, tokenId, remainingSize])
+}
+
+model VirtualPositionLotClose {
+  id                   String                  @id @default(uuid())
+  userId               Int
+  user                 User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId            String
+  account              VirtualCopyAccount      @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  subscriptionId       String
+  subscription         VirtualCopySubscription @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  lotId                String
+  lot                  VirtualPositionLot      @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  buyExecutionId       String
+  buyExecution         VirtualCopyExecution    @relation("VirtualBuyExecutionCloses", fields: [buyExecutionId], references: [id], onDelete: Restrict)
+  sellExecutionId      String
+  sellExecution        VirtualCopyExecution    @relation("VirtualSellExecution", fields: [sellExecutionId], references: [id], onDelete: Restrict)
+  tokenId              String
+  closedSize           Decimal                 @db.Decimal(38, 18)
+  entryPrice           Decimal                 @db.Decimal(38, 18)
+  exitPrice            Decimal                 @db.Decimal(38, 18)
+  costBasisUsd         Decimal                 @db.Decimal(38, 18)
+  proceedsUsd          Decimal                 @db.Decimal(38, 18)
+  allocatedEntryFeeUsd Decimal                 @default(0) @db.Decimal(38, 18)
+  exitFeeUsd           Decimal                 @default(0) @db.Decimal(38, 18)
+  allocatedFeeUsd      Decimal                 @default(0) @db.Decimal(38, 18)
+  realizedPnlUsd       Decimal                 @db.Decimal(38, 18)
+  closeReason          String
+  settlementEvidence   Json?
+  createdAt            DateTime                @default(now())
+
+  @@unique([sellExecutionId, lotId])
+  @@index([accountId, createdAt])
+  @@index([accountId, tokenId])
+}
+
+model VirtualAccountLedger {
+  id              String             @id @default(uuid())
+  userId          Int
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId       String
+  account         VirtualCopyAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  direction       String
+  category        String
+  amountUsd       Decimal            @db.Decimal(38, 18)
+  balanceAfterUsd Decimal            @db.Decimal(38, 18)
+  refType         String?
+  refId           String?
+  idempotencyKey  String             @unique
+  metadata        Json?
+  occurredAt      DateTime           @default(now())
+  createdAt       DateTime           @default(now())
+
+  @@index([accountId, occurredAt])
+  @@index([accountId, category, occurredAt])
+}
+
+model VirtualAccountEquitySnapshot {
+  id                   BigInt             @id @default(autoincrement())
+  accountId            String
+  account              VirtualCopyAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  cashBalanceUsd       Decimal            @db.Decimal(38, 18)
+  positionValueUsd     Decimal            @db.Decimal(38, 18)
+  equityUsd            Decimal            @db.Decimal(38, 18)
+  realizedPnlUsd       Decimal            @db.Decimal(38, 18)
+  unrealizedPnlUsd     Decimal            @db.Decimal(38, 18)
+  totalPnlUsd          Decimal            @db.Decimal(38, 18)
+  totalReturn          Decimal            @db.Decimal(20, 8)
+  drawdownUsd          Decimal            @db.Decimal(38, 18)
+  drawdownPercent      Decimal            @db.Decimal(20, 8)
+  priceAsOf            DateTime
+  priceStatus          String             @default("UNAVAILABLE")
+  priceSource          String             @default("UNAVAILABLE")
+  unavailableMarkCount Int                @default(0)
+  snapshotAt           DateTime
+
+  @@unique([accountId, snapshotAt])
+  @@index([accountId, snapshotAt])
+}
+
+model VirtualPositionCloseQuote {
+  id                      String             @id @default(uuid())
+  userId                  Int
+  user                    User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accountId               String
+  account                 VirtualCopyAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  tokenId                 String
+  requestedSize           Decimal            @db.Decimal(38, 18)
+  estimatedFillSize       Decimal            @db.Decimal(38, 18)
+  estimatedAvgPrice       Decimal            @db.Decimal(38, 18)
+  estimatedGrossUsd       Decimal            @db.Decimal(38, 18)
+  estimatedFeeUsd         Decimal            @db.Decimal(38, 18)
+  estimatedProceedsUsd    Decimal            @db.Decimal(38, 18)
+  estimatedRealizedPnlUsd Decimal            @db.Decimal(38, 18)
+  slippageBps             Int
+  priceSource             String
+  priceObservedAt         DateTime
+  feeModelVersion         String
+  feeRate                 Decimal            @db.Decimal(10, 8)
+  orderBookEvidence       Json
+  status                  String             @default("ACTIVE")
+  expiresAt               DateTime
+  consumedAt              DateTime?
+  idempotencyKey          String             @unique
+  createdAt               DateTime           @default(now())
+
+  @@index([accountId, tokenId, status, expiresAt])
+  @@index([userId, createdAt])
+}
+
+model VirtualCopyRateLimitEvent {
+  id         BigInt   @id @default(autoincrement())
+  key        String
+  occurredAt DateTime @default(now())
+
+  @@index([key, occurredAt])
+  @@index([occurredAt])
+}
+
+model VirtualCopyReplayCheckpoint {
+  key           String   @id
+  lastCreatedAt DateTime
+  lastTradeId   String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+/// 跟单执行行（状态机）；表名 copy_trades
+model CopyTradeRow {
+  id             String           @id @default(uuid())
+  userId         Int
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  leaderTradeId  String
+  leaderTrade    LeaderTrade      @relation(fields: [leaderTradeId], references: [id], onDelete: Cascade)
+  subscriptionId String
+  subscription   CopySubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  /// Leader 原始订单 hash/标识（用于后台查询与去重诊断）
+  leaderOrderHash String?
+  chain           String     @default("POLYGON")
+  marketId        String?
+  marketTitle     String?
+  side            TradeSide?
+  tokenId         String?
+  outcome         String?
+
+  /// 金额/价格字段统一以字符串存储/返回，避免浮点
+  orderAmount  String?
+  filledAmount String?
+  avgPrice     String?
+
+  gasUsed             String?
+  txHash              String?
+  status              CopyTradeStatus @default(queued)
+  errorMsg            String?
+  errorCode           String?
+  retryCount          Int             @default(0)
+  polymarketOrderId   String?
+  intendedPrice       String?
+  intendedSize        String?
+  intendedNotional    String?
+  minNotionalAdjusted Boolean         @default(false)
+
+  submittedAt DateTime?
+  filledAt    DateTime?
+  cancelledAt DateTime?
+
+  /// 单笔跟单已实现盈亏（USD）；由结算/对账任务写入，未实现前为 null
+  realizedPnlUsd Decimal?  @db.Decimal(38, 18)
+  /// 盈亏归属时间（首次写入 realizedPnlUsd 时设置）；用于「今日收益」等按日聚合
+  realizedPnlAt  DateTime?
+
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  riskEvents RiskEvent[]
+
+  @@unique([leaderTradeId, subscriptionId])
+  @@index([userId, status])
+  @@index([userId, status, createdAt])
+  @@index([userId, subscriptionId, status, createdAt])
+  @@index([userId, createdAt])
+  @@index([subscriptionId, status, updatedAt])
+  @@index([userId, status, updatedAt])
+  @@index([userId, tokenId, createdAt])
+  @@index([userId, realizedPnlAt])
+  @@index([status, createdAt])
+  @@map("copy_trades")
+}
+
+model CopyPositionLot {
+  id                String   @id @default(uuid())
+  userId            Int
+  subscriptionId    String
+  leaderId          String?
+  leaderAddress     String
+  tokenID           String
+  buyCopyTradeRowId String   @unique
+  entryPrice        Decimal  @db.Decimal(38, 18)
+  entrySize         Decimal  @db.Decimal(38, 18)
+  remainingSize     Decimal  @db.Decimal(38, 18)
+  entryNotional     Decimal  @db.Decimal(38, 18)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([userId, subscriptionId, tokenID])
+  @@index([userId, tokenID])
+  @@index([subscriptionId, tokenID])
+  @@map("copy_position_lots")
+}
+
+model CopyPositionLotClose {
+  id                 String   @id @default(uuid())
+  userId             Int
+  subscriptionId     String
+  sellCopyTradeRowId String
+  buyCopyTradeRowId  String
+  lotId              String
+  tokenID            String
+  closedSize         Decimal  @db.Decimal(38, 18)
+  entryPrice         Decimal  @db.Decimal(38, 18)
+  exitPrice          Decimal  @db.Decimal(38, 18)
+  costBasisUsd       Decimal  @db.Decimal(38, 18)
+  proceedsUsd        Decimal  @db.Decimal(38, 18)
+  realizedPnlUsd     Decimal  @db.Decimal(38, 18)
+  createdAt          DateTime @default(now())
+
+  @@index([userId, tokenID])
+  @@index([userId, createdAt])
+  @@index([userId, sellCopyTradeRowId])
+  @@index([subscriptionId, tokenID])
+  @@index([sellCopyTradeRowId])
+  @@index([buyCopyTradeRowId])
+  @@map("copy_position_lot_closes")
+}
+
+/// Append-only realized copy-PnL fact. Corrections are represented by a new delta event.
+model UserCopyPnlEvent {
+  id            String   @id @default(uuid())
+  eventKey      String   @unique
+  userId        Int
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceType    String
+  sourceId      String
+  previous      Decimal  @db.Decimal(38, 18)
+  next          Decimal  @db.Decimal(38, 18)
+  delta         Decimal  @db.Decimal(38, 18)
+  attributionAt DateTime
+  dayStartAt    DateTime
+  createdAt     DateTime @default(now())
+
+  @@index([userId, attributionAt])
+  @@index([userId, dayStartAt])
+  @@index([sourceType, sourceId])
+  @@map("user_copy_pnl_events")
+}
+
+model UserCopyPnlDaily {
+  id             String   @id @default(uuid())
+  userId         Int
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dayStartAt     DateTime
+  realizedPnlUsd Decimal  @default(0) @db.Decimal(38, 18)
+  updatedAt      DateTime @updatedAt
+
+  @@unique([userId, dayStartAt])
+  @@index([userId, dayStartAt])
+  @@map("user_copy_pnl_daily")
+}
+
+enum TradeAdminModule {
+  TRADER
+  LEADER_ADDRESS
+  SUBSCRIPTION
+  COPY_ORDER
+}
+
+enum TradeAdminAction {
+  CREATE
+  UPDATE
+  ENABLE
+  DISABLE
+  MARK_REVIEW
+  PAUSE
+  RESUME
+  CANCEL
+  RETRY
+  STATUS_CHANGE
+}
+
+model TradeAdminLog {
+  id         String           @id @default(uuid())
+  adminId    String
+  module     TradeAdminModule
+  targetId   String
+  action     TradeAdminAction
+  beforeData Json?
+  afterData  Json?
+  remark     String?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime         @default(now())
+
+  @@index([adminId, createdAt])
+  @@index([module, createdAt])
+  @@index([targetId, createdAt])
+  @@map("trade_admin_logs")
+}
+
+/// 市场冷却（Postgres，替代 Redis copy:cooldown）
+model CopyMarketCooldown {
+  id             String           @id @default(uuid())
+  userId         Int
+  subscriptionId String
+  subscription   CopySubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  marketId       String
+  cooldownUntil  DateTime
+  reason         String?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@unique([userId, subscriptionId, marketId])
+  @@index([cooldownUntil])
+  @@map("copy_market_cooldowns")
+}
+
+model SystemControl {
+  key                  String            @id
+  mode                 TradingSystemMode @default(NORMAL)
+  reason               String?
+  metadata             Json?
+  restoreAt            DateTime?
+  updatedByAdminUserId String?
+  updatedByAdminUser   AdminUser?        @relation(fields: [updatedByAdminUserId], references: [id], onDelete: SetNull)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  @@index([mode, updatedAt])
+  @@index([restoreAt])
+}
+
+model LeaderRiskState {
+  id                   String           @id @default(uuid())
+  leaderId             String           @unique
+  leader               CopyLeader       @relation(fields: [leaderId], references: [id], onDelete: Cascade)
+  status               LeaderRiskStatus @default(ACTIVE)
+  reasonCode           String?
+  note                 String?
+  metadata             Json?
+  expiresAt            DateTime?
+  updatedByAdminUserId String?
+  updatedByAdminUser   AdminUser?       @relation(fields: [updatedByAdminUserId], references: [id], onDelete: SetNull)
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  @@index([status, updatedAt])
+  @@index([expiresAt])
+}
+
+model AuditEvent {
+  id         String   @id @default(uuid())
+  actorType  String
+  actorId    String?
+  userId     Int?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  targetType String?
+  targetId   String?
+  result     String
+  reasonCode String?
+  requestId  String?
+  ip         String?
+  userAgent  String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@index([targetType, targetId])
+  @@index([reasonCode, createdAt])
+  @@index([result, createdAt])
+}
+
+model RiskEvent {
+  id                String            @id @default(uuid())
+  userId            Int?
+  user              User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  leaderId          String?
+  leader            CopyLeader?       @relation(fields: [leaderId], references: [id], onDelete: SetNull)
+  subscriptionId    String?
+  subscription      CopySubscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  leaderTradeId     String?
+  leaderTrade       LeaderTrade?      @relation(fields: [leaderTradeId], references: [id], onDelete: SetNull)
+  copyTradeRowId    String?
+  copyTradeRow      CopyTradeRow?     @relation(fields: [copyTradeRowId], references: [id], onDelete: SetNull)
+  source            String
+  result            String
+  reasonCode        String?
+  marketId          String?
+  tokenId           String?
+  side              String?
+  notionalUsd       Decimal?          @db.Decimal(38, 18)
+  thresholdSnapshot Json?
+  inputSnapshot     Json?
+  metadata          Json?
+  createdAt         DateTime          @default(now())
+
+  @@index([userId, createdAt])
+  @@index([leaderId, createdAt])
+  @@index([subscriptionId, createdAt])
+  @@index([copyTradeRowId])
+  @@index([reasonCode, createdAt])
+  @@index([source, createdAt])
+}
+
+model BillingLedger {
+  id            String   @id @default(uuid())
+  userId        Int
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entryType     String
+  sourceType    String
+  sourceOrderId String?
+  amount        Decimal  @db.Decimal(38, 18)
+  balanceAfter  Decimal? @db.Decimal(38, 18)
+  currency      String   @default("USD")
+  ruleVersion   String?
+  note          String?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([sourceType, sourceOrderId])
+  @@index([entryType, createdAt])
+}
+
+/// 登录会话：JWT 的 jti 对应本表 id，expiresAt 与 JWT exp 对齐（默认 7 天）
+model UserSession {
+  id        String   @id @default(uuid())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model AdminSession {
+  id          String    @id @default(uuid())
+  adminUserId String
+  adminUser   AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
+  tokenHash   String
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  lastSeenAt  DateTime?
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime  @default(now())
+
+  @@index([adminUserId])
+  @@index([expiresAt])
+  @@index([revokedAt])
+}
+
+model UserRiskLog {
+  id           Int       @id @default(autoincrement())
+  userId       Int
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  adminId      String?
+  action       String
+  beforeStatus String?
+  afterStatus  String?
+  reason       String?
+  remark       String?
+  frozenUntil  DateTime?
+  ip           String?
+  userAgent    String?
+  createdAt    DateTime  @default(now())
+
+  @@index([userId])
+  @@index([adminId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("user_risk_logs")
+}
+
+model AdminActionLog {
+  id          String    @id @default(uuid())
+  adminUserId String
+  adminUser   AdminUser @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
+  action      String
+  targetType  String?
+  targetId    String?
+  reason      String?
+  before      Json?
+  after       Json?
+  requestId   String?
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime  @default(now())
+
+  @@index([adminUserId, createdAt])
+  @@index([action, createdAt])
+  @@index([targetType, targetId])
+}
+
+// 托管子钱包私钥，加密后存储
+model UserCustodialKey {
+  id Int @id @default(autoincrement())
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  walletId Int
+  wallet   Wallet @relation(fields: [walletId], references: [id])
+
+  /// GO_REMOTE 托管可为空（无私钥落库）
+  encryptedPrivateKey String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// 托管资产记账（单资产 USDC.e 起步，可扩展）
+model UserAsset {
+  id Int @id @default(autoincrement())
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  symbol    String
+  available Decimal @default(0) @db.Decimal(38, 18)
+  locked    Decimal @default(0) @db.Decimal(38, 18)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Backend 查询链上/ deposit 余额时写入；admin 只读此表，避免列表 RPC。
+model UserBalanceCache {
+  userId Int  @id
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  depositUsdc Decimal @default(0) @db.Decimal(38, 18)
+  depositPusd Decimal @default(0) @db.Decimal(38, 18)
+  custodyUsdc Decimal @default(0) @db.Decimal(38, 18)
+
+  cachedAt  DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model GasOrder {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  // 金额与 Gas 点数
+  amountPaid        Decimal @db.Decimal(38, 18)
+  gasPurchasedGross Decimal @db.Decimal(38, 18)
+  gasNetToUser      Decimal @db.Decimal(38, 18)
+  commissionTotal   Decimal @db.Decimal(38, 18)
+
+  // 本单可用于分成的 USDC 金额（例如 amountPaid 的一部分），用于统计
+  distributableUsdc     Decimal? @db.Decimal(38, 18)
+  sourceType            String   @default("GAS_RECHARGE")
+  sourceOrderId         String?
+  commissionRuleVersion String   @default("affiliate_v1")
+
+  status String
+
+  commissions GasCommission[]
+  balanceLogs GasBalanceLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model GasCommission {
+  id Int @id @default(autoincrement())
+
+  orderId Int
+  order   GasOrder @relation(fields: [orderId], references: [id])
+
+  fromUserId Int
+  fromUser   User @relation("CommissionFromUser", fields: [fromUserId], references: [id])
+
+  toUserId Int
+  toUser   User @relation("CommissionToUser", fields: [toUserId], references: [id])
+
+  level            Int
+  commissionAmount Decimal @db.Decimal(38, 18)
+  settlementStatus String
+  sourceType       String  @default("GAS_RECHARGE")
+  sourceOrderId    String?
+  ruleVersion      String  @default("affiliate_v1")
+
+  // 结算时的档位与比例快照，便于审计
+  tierAtTheTime Int?
+  rateAtTheTime Decimal? @db.Decimal(10, 6)
+
+  /// 用户领取入账时间；null 表示待领取
+  claimedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([toUserId, claimedAt])
+}
+
+model GasBalanceLog {
+  id Int @id @default(autoincrement())
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  change        Decimal @db.Decimal(38, 18)
+  type          String
+  sourceType    String?
+  sourceOrderId String?
+  ruleVersion   String?
+
+  relatedOrderId Int?
+  relatedOrder   GasOrder? @relation(fields: [relatedOrderId], references: [id])
+
+  relatedActionId String?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+/// Share to X 每日 GAS 奖励领取记录（按 userId + UTC 日唯一）
+model ShareToXGasClaim {
+  id        String   @id @default(cuid())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  wallet    String?
+  gasAmount Decimal  @db.Decimal(38, 18)
+  claimDate DateTime @db.Date
+  createdAt DateTime @default(now())
+
+  @@unique([userId, claimDate])
+  @@index([userId, createdAt])
+}
+
+model ReferralBindingAudit {
+  id                   Int       @id @default(autoincrement())
+  userId               Int?
+  user                 User?     @relation("ReferralBindingUser", fields: [userId], references: [id], onDelete: SetNull)
+  referrerId           Int?
+  referrer             User?     @relation("ReferralBindingReferrer", fields: [referrerId], references: [id], onDelete: SetNull)
+  targetEmail          String?
+  inviteCodeRaw        String?
+  inviteCodeNormalized String?
+  bindSource           String
+  bindStatus           String
+  failureReason        String?
+  referralPathSnapshot String?
+  boundAt              DateTime?
+  createdAt            DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([referrerId, createdAt])
+  @@index([inviteCodeNormalized])
+  @@index([bindStatus, createdAt])
+}
+
+model GasPackage {
+  id                 Int      @id @default(autoincrement())
+  name               String?
+  usdPrice           Decimal  @db.Decimal(38, 18)
+  originalUsdPrice   Decimal? @db.Decimal(38, 18)
+  bonusAffiliateTier Int?
+  gasAmount          Decimal  @db.Decimal(38, 18)
+  description        String?
+  isActive           Boolean  @default(true)
+  sortOrder          Int      @default(0)
+  chainId            Int?
+  currency           String?  @default("USD")
+
+  orders    GasPackageOrder[]
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+}
+
+model GasPackageOrder {
+  id Int @id @default(autoincrement())
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  packageId Int
+  package   GasPackage @relation(fields: [packageId], references: [id])
+
+  status                     String
+  txHash                     String?
+  paymentConfirmedAt         DateTime?
+  fulfilledAt                DateTime?
+  commissionSettlementStatus String    @default("PENDING")
+  commissionSettledAt        DateTime?
+
+  paidUsd   Decimal @db.Decimal(38, 18)
+  gasAmount Decimal @db.Decimal(38, 18)
+
+  bonusAffiliateTierGranted   Int?
+  bonusAffiliateTierGrantedAt DateTime?
+
+  // 可选：关联一条 GasOrder 记录，表示本次套餐购买在主 Gas 订单表中的记录
+  gasOrderId           Int?
+  mallOrderCommissions MallOrderCommission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// settings：最近已履约套餐 orderBy fulfilledAt DESC
+  @@index([userId, fulfilledAt(sort: Desc)])
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model AffiliateTierProduct {
+  id               Int      @id @default(autoincrement())
+  name             String?
+  affiliateTier    Int
+  usdPrice         Decimal  @db.Decimal(38, 18)
+  originalUsdPrice Decimal? @db.Decimal(38, 18)
+  description      String?
+  isActive         Boolean  @default(true)
+  sortOrder        Int      @default(0)
+
+  orders    AffiliateTierOrder[]
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@index([affiliateTier])
+}
+
+model AffiliateTierOrder {
+  id Int @id @default(autoincrement())
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  productId Int
+  product   AffiliateTierProduct @relation(fields: [productId], references: [id])
+
+  status                     String
+  txHash                     String?
+  paymentConfirmedAt         DateTime?
+  fulfilledAt                DateTime?
+  commissionSettlementStatus String    @default("PENDING")
+  commissionSettledAt        DateTime?
+
+  paidUsd       Decimal  @db.Decimal(38, 18)
+  listUsdPrice  Decimal? @db.Decimal(38, 18)
+  creditUsd     Decimal? @db.Decimal(38, 18)
+  affiliateTier Int
+
+  mallOrderCommissions MallOrderCommission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([productId])
+  @@index([status, createdAt])
+}
+
+model MallCommissionAccount {
+  userId           Int      @id
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  availableBalance Decimal  @default(0) @db.Decimal(38, 18)
+  totalEarned      Decimal  @default(0) @db.Decimal(38, 18)
+  totalSettled     Decimal  @default(0) @db.Decimal(38, 18)
+  totalReversed    Decimal  @default(0) @db.Decimal(38, 18)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  ledgerEntries MallCommissionLedger[]
+}
+
+model MallCommissionLedger {
+  id                  Int                   @id @default(autoincrement())
+  accountUserId       Int
+  account             MallCommissionAccount @relation(fields: [accountUserId], references: [userId], onDelete: Cascade)
+  userId              Int
+  user                User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  change              Decimal               @db.Decimal(38, 18)
+  balanceAfter        Decimal               @db.Decimal(38, 18)
+  entryType           String
+  sourceType          String
+  sourceOrderId       String
+  ruleVersion         String?
+  relatedCommissionId Int?
+  note                String?
+  createdAt           DateTime              @default(now())
+
+  @@index([accountUserId, createdAt])
+  @@index([userId, createdAt])
+  @@index([sourceType, sourceOrderId])
+}
+
+model MallOrderCommission {
+  id                   Int                 @id @default(autoincrement())
+  orderId              Int?
+  order                GasPackageOrder?    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  affiliateTierOrderId Int?
+  affiliateTierOrder   AffiliateTierOrder? @relation(fields: [affiliateTierOrderId], references: [id], onDelete: Cascade)
+  fromUserId           Int
+  fromUser             User                @relation("MallOrderCommissionFromUser", fields: [fromUserId], references: [id])
+  toUserId             Int
+  toUser               User                @relation("MallOrderCommissionToUser", fields: [toUserId], references: [id])
+  level                Int
+  commissionAmount     Decimal             @db.Decimal(38, 18)
+  settlementStatus     String
+  sourceType           String              @default("MALL_ORDER")
+  sourceOrderId        String
+  ruleVersion          String              @default("affiliate_v1")
+  tierAtTheTime        Int?
+  rateAtTheTime        Decimal?            @db.Decimal(10, 6)
+  settledAt            DateTime?
+  reversedAt           DateTime?
+  /// 用户领取入账时间；null 表示待领取
+  claimedAt            DateTime?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+
+  @@unique([sourceType, sourceOrderId, toUserId, level])
+  @@index([fromUserId, createdAt])
+  @@index([affiliateTierOrderId])
+  @@index([toUserId, createdAt])
+  @@index([toUserId, claimedAt])
+  @@index([sourceType, sourceOrderId])
+  @@index([settlementStatus, createdAt])
+}
+
+/// 用户 Polymarket API Key（按钱包；apiSecret / passphrase 存 AES-GCM 密文）
+model ApiCredential {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  walletId Int    @unique
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  apiKey     String
+  apiSecret  String
+  passphrase String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model CopyRelation {
+  id              String   @id @default(uuid())
+  leaderAddress   String
+  followerUserId  Int
+  followerAddress String
+  apiKeyEncrypted String
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([leaderAddress, followerUserId])
+}
+
+/// 跟单执行记录（用于观测：是否检测到 leader 事件、是否为用户下单）
+model CopyExecution {
+  id String @id @default(uuid())
+
+  followerUserId Int
+  leaderAddress  String
+  tokenID        String
+  side           String
+  price          Decimal @db.Decimal(38, 18)
+  size           Decimal @db.Decimal(38, 18)
+
+  ratioApplied Decimal? @db.Decimal(10, 6)
+  notional     Decimal? @db.Decimal(38, 18)
+
+  status            String
+  polymarketOrderId String?
+  error             String?
+
+  createdAt DateTime @default(now())
+
+  @@index([followerUserId, createdAt])
+  @@index([followerUserId, status])
+  @@index([followerUserId, tokenID, status])
+  @@index([leaderAddress, createdAt])
+}
+
+/// CTF redeem 成功记录（按用户 + conditionId 幂等）
+model PolymarketRedeemLog {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conditionId String
+  txHash      String
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, conditionId])
+  @@index([userId])
+}
+
+/// 自动赎回失败计数：同一持仓连续失败达到上限后不再自动兑换（手动赎回不受影响）
+model PolymarketRedeemAttemptState {
+  id           Int       @id @default(autoincrement())
+  userId       Int
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conditionId  String
+  outcomeIndex Int       @default(0)
+  failCount    Int       @default(0)
+  lastError    String?
+  lastFailedAt DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([userId, conditionId, outcomeIndex])
+  @@index([userId, failCount])
+}
+
+/// copy listener 的链上回放游标（按 listener key 持久化）
+model CopyListenerCursor {
+  key         String   @id
+  blockNumber Int
+  logIndex    Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/// Polymarket Data API /v1/leaderboard 缓存（按完整批次切换，仅保留最新批次）
+model LeaderboardRow {
+  id           Int      @id @default(autoincrement())
+  category     String
+  timePeriod   String
+  orderBy      String
+  batchId      String
+  syncVersion  Int      @default(0)
+  rank         Int
+  proxyWallet  String
+  userName     String?
+  profileImage String?
+  xUsername    String?
+  vol          Decimal  @db.Decimal(38, 18)
+  pnl          Decimal  @db.Decimal(38, 18)
+  syncedAt     DateTime
+
+  @@unique([category, timePeriod, orderBy, batchId, rank])
+  @@index([category, timePeriod, orderBy])
+  @@index([category, timePeriod, orderBy, batchId])
+  @@index([category, orderBy, batchId])
+  @@index([batchId])
+  @@index([proxyWallet])
+}
+
+/// 官方榜滑动窗口游标：每个 preset（category × timePeriod × orderBy）一行，
+/// 记录下一轮要拉的 offset；扫到尾部后回 0 并递增 cycleId
+model LeaderboardSyncCursor {
+  id           Int       @id @default(autoincrement())
+  category     String
+  timePeriod   String
+  orderBy      String
+  nextOffset   Int       @default(0)
+  cycleId      Int       @default(1)
+  lastWindowAt DateTime?
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([category, timePeriod, orderBy])
+}
+
+/// 轻量 cron 租约：用于多实例场景下抢占单任务执行权
+model CronLease {
+  key       String   @id
+  owner     String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([expiresAt])
+}
+
+/// 用户持仓/赎回扫描状态：交易后标记 active，cron 只扫描到期 active 用户，避免全量扫钱包。
+model UserPositionScanState {
+  userId          Int       @id
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  active          Boolean   @default(true)
+  hasOpenPosition Boolean   @default(true)
+  nextScanAt      DateTime  @default(now())
+  lastScannedAt   DateTime?
+  lastTradeAt     DateTime?
+  lastRedeemedAt  DateTime?
+  scanCount       Int       @default(0)
+  lastError       String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([active, nextScanAt])
+  @@index([hasOpenPosition, nextScanAt])
+  @@index([lastTradeAt])
+}
+
+/// 外部排行榜指标缓存：保存第三方程序预先计算好的收益质量指标，按周期保留历史版本
+model PredictingTopLeaderboardRow {
+  id                 Int       @id @default(autoincrement())
+  period             String
+  syncVersion        Int       @default(0)
+  rank               Int
+  wallet             String
+  name               String?
+  twitter            String?
+  profileImage       String?
+  platform           String?
+  polymarketProfile  String?
+  walletCount        Int?
+  pnl                Decimal?  @db.Decimal(38, 18)
+  buys               Int?
+  sells              Int?
+  deposits           Decimal?  @db.Decimal(38, 18)
+  withdrawals        Decimal?  @db.Decimal(38, 18)
+  views              Int?
+  smartScore         Decimal?  @db.Decimal(20, 8)
+  tier               String?
+  avgDailyReturn     Decimal?  @db.Decimal(20, 8)
+  bestDay            Decimal?  @db.Decimal(20, 8)
+  worstDay           Decimal?  @db.Decimal(20, 8)
+  winRate            Decimal?  @db.Decimal(20, 8)
+  profitFactor       Decimal?  @db.Decimal(20, 8)
+  rSquared           Decimal?  @db.Decimal(20, 8)
+  sharpeRatio        Decimal?  @db.Decimal(20, 8)
+  sortinoRatio       Decimal?  @db.Decimal(20, 8)
+  calmarRatio        Decimal?  @db.Decimal(20, 8)
+  maxDrawdown        Decimal?  @db.Decimal(38, 18)
+  maxDrawdownPercent Decimal?  @db.Decimal(20, 8)
+  currentDrawdown    Decimal?  @db.Decimal(20, 8)
+  totalReturn        Decimal?  @db.Decimal(38, 18)
+  trendSlope         Decimal?  @db.Decimal(38, 18)
+  calculatedAt       DateTime?
+  rawPayload         Json?
+  syncedAt           DateTime
+
+  @@index([period, rank])
+  @@index([period, syncVersion])
+  @@index([wallet])
+}
+
+/// Polymarket Analytics (Falcon / Heisenberg) 排行榜缓存
+model PolymarketAnalyticsLeaderboardRow {
+  id            Int      @id @default(autoincrement())
+  period        String
+  syncVersion   Int      @default(0)
+  rank          Int
+  wallet        String
+  hScore        Decimal? @db.Decimal(20, 8)
+  roi           Decimal? @db.Decimal(20, 8)
+  winRate       Decimal? @db.Decimal(20, 8)
+  sharpeRatio   Decimal? @db.Decimal(20, 8)
+  totalPnl      Decimal? @db.Decimal(38, 18)
+  totalVolume   Decimal? @db.Decimal(38, 18)
+  totalTrades   Int?
+  marketsTraded Int?
+  tier          String?
+  rawPayload    Json?
+  syncedAt      DateTime
+
+  @@index([period, rank])
+  @@index([period, syncVersion])
+  @@index([wallet])
+}
+
+/// 聪明钱候选池：由外部榜并集同步而来，承载抓取/黑名单/调度状态
+model ObservedTrader {
+  id                      Int       @id @default(autoincrement())
+  wallet                  String    @unique
+  profileSlug             String?
+  sourceRankWeek          Int?
+  sourceRankMonth         Int?
+  sourceRankAll           Int?
+  officialSourceRankWeek  Int?
+  officialSourceRankMonth Int?
+  officialSourceRankAll   Int?
+  externalSourceRankWeek  Int?
+  externalSourceRankMonth Int?
+  externalSourceRankAll   Int?
+  candidatePeriods        String[]  @default([])
+  candidateCategories     String[]  @default(["OVERALL"])
+  candidateActive         Boolean   @default(true)
+  candidateOrigin         String    @default("LEADERBOARD") // LEADERBOARD | BLOCK_SCAN | MANUAL
+  candidateSourceVersion  Int       @default(0)
+  candidateLastSeenAt     DateTime
+  enabled                 Boolean   @default(true)
+  blacklisted             Boolean   @default(false)
+  noiseTags               String[]  @default([])
+  lastSeenAt              DateTime
+  lastFetchedAt           DateTime?
+  lastScoredAt            DateTime?
+  fetchFailCount          Int       @default(0)
+  lastFetchError          String?
+  lastFetchStatus         String?
+  nextRetryAt             DateTime?
+  /// Phase 0+ pipeline 预备字段（Phase 1 启用）
+  pipelineStage           String    @default("LEGACY")
+  sources                 String[]  @default([])
+  nextLightAnalyzeAt      DateTime?
+  nextDeepAnalyzeAt       DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  @@index([enabled, blacklisted])
+  @@index([candidateActive, enabled, blacklisted])
+  @@index([candidateOrigin, candidateActive])
+  @@index([candidateSourceVersion])
+  @@index([candidateLastSeenAt])
+  @@index([lastFetchedAt])
+  @@index([lastSeenAt])
+  @@index([nextRetryAt])
+}
+
+/// 扫块发现的链上活跃地址：经门槛过滤后晋升 ObservedTrader 参与聪明钱评分
+model BlockScanDiscoveredTrader {
+  wallet            String    @id
+  firstSeenAt       DateTime
+  lastSeenAt        DateTime
+  lastBlockNumber   Int
+  fillCount         Int       @default(0)
+  windowStartBlock  Int
+  windowFillCount   Int       @default(0)
+  maxSingleNotional Decimal   @default(0) @db.Decimal(38, 18)
+  qualifiedAt       DateTime?
+  promotedAt        DateTime?
+  scoredAt          DateTime?
+  /// ACCUMULATING 累计中 | PROMOTED 已晋升待评分 | SCORED 已评分
+  status            String    @default("ACCUMULATING")
+  lastIngestAt      DateTime
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([qualifiedAt])
+  @@index([promotedAt, qualifiedAt])
+  @@index([status])
+  @@index([lastSeenAt])
+}
+
+/// 用户主页摘要快照：保留每次抓到的核心画像，便于后续调参与回溯
+model TraderProfileSnapshot {
+  id              Int      @id @default(autoincrement())
+  wallet          String
+  profileSlug     String?
+  displayName     String?
+  joinedAtText    String?
+  viewsText       String?
+  holdingsValue   Decimal? @db.Decimal(38, 18)
+  biggestWin      Decimal? @db.Decimal(38, 18)
+  predictionCount Int?
+  rawSummary      Json?
+  sourceUrl       String?
+  snapshotAt      DateTime
+  createdAt       DateTime @default(now())
+
+  @@index([wallet, snapshotAt])
+  @@index([profileSlug])
+}
+
+/// 收益/价值曲线点：按某次快照批量写入，用于平滑度和近期强度计算
+model TraderCurvePoint {
+  id         Int      @id @default(autoincrement())
+  wallet     String
+  curveType  String
+  ts         DateTime
+  value      Decimal  @db.Decimal(38, 18)
+  snapshotAt DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([wallet, curveType, snapshotAt])
+  @@index([wallet, ts])
+}
+
+/// Closed-positions 预热快照：Gate/Full 与 Deep 解耦；断点续拉
+model SmartMoneyClosedSnapshot {
+  id             Int       @id @default(autoincrement())
+  wallet         String
+  /// GATE | FULL
+  purpose        String
+  windowDays     Int       @default(365)
+  /// PENDING | FETCHING | READY | FAILED
+  status         String    @default("PENDING")
+  /// DataApiPosition[] JSON
+  rowsJson       Json?
+  rowCount       Int       @default(0)
+  pageCount      Int       @default(0)
+  /// 下一页页码（0-based），断点续拉
+  nextPage       Int       @default(0)
+  /// 目标最多页（GATE≈30 / FULL≈80）
+  targetMaxPages Int       @default(30)
+  capped         Boolean   @default(false)
+  timedOut       Boolean   @default(false)
+  windowComplete Boolean   @default(false)
+  fetchOk        Boolean   @default(false)
+  lastError      String?
+  /// 存量中最新一条可解析平仓时间（增量 checkpoint）
+  newestClosedAt DateTime?
+  /// 存量中最旧一条可解析平仓时间
+  oldestClosedAt DateTime?
+  /// 全量重建代数
+  incrementalEpoch Int      @default(0)
+  /// 上次增量成功时间
+  lastIncrementalAt DateTime?
+  fetchedAt      DateTime?
+  readyAt        DateTime?
+  expiresAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([wallet, purpose, windowDays])
+  @@index([status, updatedAt])
+  @@index([purpose, status, expiresAt])
+  @@index([wallet, purpose, status])
+}
+
+/// Tier 阈值 Admin 快照（singleton id=1；覆盖 env 默认值）
+model SmartMoneyTierConfig {
+  id        Int      @id @default(1)
+  config    Json
+  updatedAt DateTime @updatedAt
+}
+
+/// 聪明钱榜最终缓存行：保留当前每个地址的最新评分与可展示字段
+model SmartMoneyLeaderboardRow {
+  id                      Int       @id @default(autoincrement())
+  wallet                  String    @unique
+  rank                    Int?
+  score                   Decimal   @db.Decimal(20, 8)
+  pnlQuality              Decimal   @db.Decimal(20, 8)
+  activityScore           Decimal   @db.Decimal(20, 8)
+  consistencyScore        Decimal   @db.Decimal(20, 8)
+  officialCandidateScore  Decimal   @default(0) @db.Decimal(20, 8)
+  externalQualityScore    Decimal   @default(0) @db.Decimal(20, 8)
+  riskPenalty             Decimal   @db.Decimal(20, 8)
+  eligible                Boolean   @default(true)
+  riskFlags               String[]  @default([])
+  scoreVersion            String
+  sourceFetchedAt         DateTime?
+  lastScoredAt            DateTime
+  syncedAt                DateTime
+  displayName             String?
+  profileSlug             String?
+  joinedAtText            String?
+  profileImage            String?
+  xUsername               String?
+  predictionCount         Int?
+  holdingsValue           Decimal?  @db.Decimal(38, 18)
+  /// 用于榜单排序与筛选：评分时写入 resolved total PnL
+  totalPnl                Decimal?  @db.Decimal(38, 18)
+  sourceRankWeek          Int?
+  sourceRankMonth         Int?
+  sourceRankAll           Int?
+  officialSourceRankWeek  Int?
+  officialSourceRankMonth Int?
+  officialSourceRankAll   Int?
+  externalSourceRankWeek  Int?
+  externalSourceRankMonth Int?
+  externalSourceRankAll   Int?
+  candidatePeriods        String[]  @default([])
+  candidateCategories     String[]  @default(["OVERALL"])
+  /// 是否在活跃候选池（与 ObservedTrader 同步，避免 cached API 大 IN 查询）
+  activeCandidate         Boolean   @default(false)
+  /// predicting.top 外部指标：优先 ALL，其次 30D、7D 单条记录上的胜率 / 夏普 / 总回报
+  externalWinRate         Decimal?  @db.Decimal(38, 18)
+  externalSharpeRatio     Decimal?  @db.Decimal(38, 18)
+  externalTotalReturn     Decimal?  @db.Decimal(38, 18)
+  /// 权威回撤（比率 0~1）：评分时写入，L1 与列表共用
+  maxDrawdownPercent      Decimal?  @db.Decimal(20, 8)
+  externalMetricsPeriod   String?
+  /// 当前外部展示/评分指标来源：PREDICTING_TOP / LOCAL_FALLBACK / MIXED
+  externalMetricsSource   String?
+  /// 胜率展示来源：MARKET_CLOSED | PREDICTING_TOP | CURVE_PROXY
+  winRateSource           String?
+  /// 外部指标来源 badge：PREDICTING_TOP | LOCAL_FALLBACK | MIXED
+  metricsSourceBadge      String?
+  scoreExplain            Json?
+  /// Phase 1：是否在跟单榜 CopyPool 内
+  inCopyPool              Boolean   @default(false)
+  copyPoolEnteredAt       DateTime?
+  copyPoolExitedAt        DateTime?
+  copyPoolMissCount       Int       @default(0)
+  /// Phase 2：30d 跟单仿真分 0–100
+  copyabilityScore        Decimal?  @db.Decimal(20, 8)
+  /// Phase 2：榜内排序分（copyability×w + smartMoney×w）
+  displayScore            Decimal?  @db.Decimal(20, 8)
+  copyabilityComputedAt   DateTime?
+  /// Phase 3：ML 排序分 0–100（跟单反馈 + v3.1 特征）
+  rankScore               Decimal?  @db.Decimal(20, 8)
+  rankScoreComputedAt     DateTime?
+  /// Phase 3：跟单者 30d ROI 聚合快照（JSON）
+  copierFeedback          Json?
+  /// 设计 §3/§4.5：近 7 日盈利（1W 曲线）
+  recentPnl7d             Decimal?  @db.Decimal(38, 18)
+  /// 近 30 日盈利（ALL 曲线截窗）
+  recentPnl30d            Decimal?  @db.Decimal(38, 18)
+  /// 近 7 日成交笔数
+  trades7d                Int?
+  /// 近 30 日成交笔数
+  trades30d               Int?
+  /// 1Y 截窗总盈利（不足一年则为生涯窗）
+  totalPnl1y              Decimal?  @db.Decimal(38, 18)
+  /// 总盈利实际窗口天数
+  pnlWindowDays           Int?
+  /// 与 1Y PnL 同窗、同本金的收益率
+  totalReturn1y           Decimal?  @db.Decimal(20, 8)
+  /// 与 1Y PnL 同窗、同本金的最大回撤
+  maxDrawdown1y           Decimal?  @db.Decimal(20, 8)
+  /// 仿真回测盈亏 USD
+  backtestPnlUsd          Decimal?  @db.Decimal(38, 18)
+  /// 仿真损失率
+  copyLossRate            Decimal?  @db.Decimal(20, 8)
+  /// 仿真有效滑点 bps
+  slippageBpsEffective    Int?
+  /// Deep-Enrich：1D/1M 曲线补全时间；null 表示待补
+  lastCurveEnrichAt       DateTime?
+  /// 入榜后待补全窗 trades / copyability 仿真
+  enrichPending           Boolean   @default(false)
+  /// P0–P2：TraderScore 0–100（主展示/排序可切换）
+  traderScore             Decimal?  @db.Decimal(20, 8)
+  /// 产品档位 S|A|B|C|D
+  tier                    String?
+  /// 预测能力 Edge 分 0–100
+  edgeScore               Decimal?  @db.Decimal(20, 8)
+  /// Edge 已结算独立市场样本数
+  edgeSampleN             Int?
+  /// INFORMATION|ARBITRAGE|GAMBLER|MARKET_MAKER|GENERAL
+  traderType              String?
+  /// 活跃/存活天数
+  activeDays              Int?
+  /// 最大单市场盈利 USD
+  maxWinTradeUsd          Decimal?  @db.Decimal(38, 18)
+  /// 最大单市场亏损 USD（负值）
+  maxLossTradeUsd         Decimal?  @db.Decimal(38, 18)
+
+  @@index([eligible, score(sort: Desc)])
+  @@index([activeCandidate, eligible, sourceFetchedAt, rank])
+  @@index([inCopyPool, rank])
+  @@index([inCopyPool, displayScore(sort: Desc)])
+  @@index([inCopyPool, traderScore(sort: Desc)])
+  @@index([inCopyPool, tier])
+  @@index([eligible, totalPnl(sort: Desc)])
+  @@index([rank])
+  @@index([syncedAt])
+  @@index([lastCurveEnrichAt])
+  @@index([inCopyPool, enrichPending])
+}
+
+/// 聪明钱管道：统一地址 registry（去重 + 调度）
+model SmartMoneyRawAddress {
+  wallet                String    @id
+  sources               String[]  @default([])
+  firstSeenAt           DateTime
+  lastSeenAt            DateTime
+  /// 最近一次尝试 ingest 进 RAW 的时间（冷却去重）
+  lastIngestedAt        DateTime?
+  lastLightQueuedAt     DateTime?
+  lastDeepQueuedAt      DateTime?
+  nextLightAnalyzeAt    DateTime?
+  nextDeepAnalyzeAt     DateTime?
+  lightAnalyzeCursor    BigInt    @default(0)
+  deepAnalyzeCursor     BigInt    @default(0)
+  /// RAW | LIGHT_ANALYZING | QUALIFIED | FULL_ANALYZING | SCORED | COPY_POOL | BLOCKED | DORMANT | ELIMINATED
+  pipelineStage         String    @default("RAW")
+  tier1lPassedAt        DateTime?
+  tier1fPassedAt        DateTime?
+  tier2CorePassedAt     DateTime?
+  tier2EnhancedPassedAt DateTime?
+  tierFailReason        String?
+  dormant               Boolean   @default(false)
+  /// 淘汰池连续复检失败次数
+  elimFailCount         Int       @default(0)
+  /// 淘汰池冻结截止（连续失败达上限后）
+  elimFrozenUntil       DateTime?
+  /// 淘汰池下次慢检时间
+  nextElimCheckAt       DateTime?
+  /// HOT | COLD | PURGED（仅 ELIMINATED 有意义；默认 HOT）
+  elimBucket            String    @default("HOT")
+  /// 最近成交迹象（扫块/trades）；供冷清除
+  lastTradeAt           DateTime?
+  /// SCORED 连续未入 CopyPool 次数（Phase G：达上限则淘汰）
+  scoredMissCount       Int       @default(0)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([pipelineStage, nextLightAnalyzeAt])
+  @@index([pipelineStage, nextDeepAnalyzeAt])
+  @@index([pipelineStage, nextElimCheckAt])
+  @@index([pipelineStage, scoredMissCount])
+  @@index([pipelineStage, elimBucket, nextElimCheckAt])
+  @@index([lightAnalyzeCursor])
+  @@index([deepAnalyzeCursor])
+  @@index([lastIngestedAt])
+}
+
+/// 发现源游标（官方长尾 / 第三方 / 扫块）
+model SmartMoneyDiscoveryCursor {
+  source      String   @id
+  cursor      String   @default("0")
+  syncVersion Int?
+  meta        Json?
+  updatedAt   DateTime @updatedAt
+}
+
+model SmartMoneyPipelineCursor {
+  id                     Int       @id @default(1)
+  lightRoundRobinCounter BigInt    @default(0)
+  deepRoundRobinCounter  BigInt    @default(0)
+  lastLightTickAt        DateTime?
+  lastDeepTickAt         DateTime?
+  updatedAt              DateTime  @updatedAt
+}
+
+/// 内部 Scored 缓存（未入 CopyPool 或历史分数）
+model SmartMoneyScoreCache {
+  wallet                String    @id
+  score                 Decimal   @db.Decimal(20, 8)
+  scoreVersion          String
+  riskFlags             String[]  @default([])
+  scoreExplain          Json?
+  tier1fPassedAt        DateTime?
+  tier2CorePassedAt     DateTime?
+  tier2EnhancedPassedAt DateTime?
+  lastScoredAt          DateTime
+  updatedAt             DateTime  @updatedAt
+
+  @@index([score(sort: Desc)])
+  @@index([lastScoredAt])
+}
+
+/// 用户按需地址分析任务：短队列（总容量 5、并发 1），结果落 SmartMoneyScoreCache。
+model SmartMoneyAnalyzeJob {
+  id         String    @id @default(cuid())
+  wallet     String
+  userId     Int
+  period     String    @default("ALL")
+  /// PENDING | RUNNING | READY | FAILED | EXPIRED
+  status     String    @default("PENDING")
+  /// SKIP | ENRICH_ONLY | DEEP
+  action     String    @default("DEEP")
+  error      String?
+  /// 活跃任务去重键；PENDING/RUNNING 时等于 wallet，结束后置空。
+  activeKey  String?   @unique
+  createdAt  DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+  updatedAt  DateTime  @updatedAt
+
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+  @@index([wallet, createdAt(sort: Desc)])
+}
+
+/// 后台首页统计快照（定时刷新，避免首页实时大表 COUNT）
+model AdminStatsSnapshot {
+  id        String   @id @default(cuid())
+  statKey   String   @map("stat_key")
+  statValue String   @map("stat_value")
+  statExtra Json?    @map("stat_extra")
+  period    String   @default("current")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([statKey, period])
+  @@map("admin_stats_snapshot")
+}
+
+/// 后台首页「最近动态」
+model AdminActivityLog {
+  id         String   @id @default(cuid())
+  eventType  String   @map("event_type")
+  title      String
+  content    String?
+  actorType  String?  @map("actor_type")
+  actorId    String?  @map("actor_id")
+  targetType String?  @map("target_type")
+  targetId   String?  @map("target_id")
+  level      String   @default("info")
+  metadata   Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt(sort: Desc)])
+  @@index([eventType])
+  @@map("admin_activity_logs")
+}
+
+/// 后台系统告警
+model AdminAlert {
+  id         String    @id @default(cuid())
+  alertType  String    @map("alert_type")
+  title      String
+  content    String?
+  level      String    @default("warning")
+  status     String    @default("open")
+  source     String?
+  targetId   String?   @map("target_id")
+  metadata   Json?
+  createdAt  DateTime  @default(now()) @map("created_at")
+  resolvedAt DateTime? @map("resolved_at")
+
+  @@index([status, createdAt(sort: Desc)])
+  @@map("admin_alerts")
+}
+
+/// 后台首页「表现领先地址」
+model LeaderPerformanceStat {
+  id             String   @id @default(cuid())
+  leaderAddress  String   @map("leader_address")
+  roi            Decimal  @db.Decimal(20, 8)
+  winRate        Decimal  @map("win_rate") @db.Decimal(20, 8)
+  followersCount Int      @default(0) @map("followers_count")
+  copyVolume     Decimal? @map("copy_volume") @db.Decimal(38, 18)
+  profitUsdt     Decimal? @map("profit_usdt") @db.Decimal(38, 18)
+  riskLevel      String   @default("medium") @map("risk_level")
+  period         String   @default("30d")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([leaderAddress, period])
+  @@index([period, roi(sort: Desc)])
+  @@map("leader_performance_stats")
+}
+
+/// 系统运行状态（节点、同步、版本等）
+model SystemRuntimeStatus {
+  id          String   @id @default(cuid())
+  statusKey   String   @unique @map("status_key")
+  statusValue String   @map("status_value")
+  statusExtra Json?    @map("status_extra")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("system_runtime_status")
+}
+
+/// 每日运营统计（趋势图）
+model AdminDailyStat {
+  id                    String   @id @default(cuid())
+  statDate              DateTime @unique @map("stat_date") @db.Date
+  registeredUsers       Int      @default(0) @map("registered_users")
+  newRegisteredUsers    Int      @default(0) @map("new_registered_users")
+  walletBoundUsers      Int      @default(0) @map("wallet_bound_users")
+  activeCopyTraders     Int      @default(0) @map("active_copy_traders")
+  copySuccessCount      Int      @default(0) @map("copy_success_count")
+  copyFailedCount       Int      @default(0) @map("copy_failed_count")
+  riskBlockCount        Int      @default(0) @map("risk_block_count")
+  gasOrderCount         Int      @default(0) @map("gas_order_count")
+  onlineUsers           Int      @default(0) @map("online_users")
+  subscribedAddresses   Int      @default(0) @map("subscribed_addresses")
+  gasPurchaseCount      Int      @default(0) @map("gas_purchase_count")
+  gasPurchaseAmountUsdt Decimal  @default(0) @map("gas_purchase_amount_usdt") @db.Decimal(30, 8)
+  commissionUsdt        Decimal  @default(0) @map("commission_usdt") @db.Decimal(38, 18)
+  observedTradersTotal  Int      @default(0) @map("observed_traders_total")
+  uptimePercent         Decimal  @default(0) @map("uptime_percent") @db.Decimal(10, 4)
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  @@map("admin_daily_stats")
+}
+
+/// 用户日活跃（DAU）落表，用于在线人数趋势（onlineUsers = DAU）
+model UserDailyActivity {
+  id            String   @id @default(cuid())
+  userId        Int      @map("user_id")
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activityDate  DateTime @map("activity_date") @db.Date
+  lastActiveAt  DateTime @map("last_active_at")
+  activityCount Int      @default(0) @map("activity_count")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, activityDate])
+  @@index([activityDate])
+  @@map("user_daily_activity")
+}
+
+/// 统一分佣流水（后台分佣管理）
+model CommissionRecord {
+  id                String    @id
+  referrerUserId    Int
+  invitedUserId     Int
+  inviteCode        String?
+  sourceType        String
+  sourceOrderId     String
+  sourceOrderAmount Decimal   @db.Decimal(38, 18)
+  commissionRate    Decimal?  @db.Decimal(10, 6)
+  commissionAmount  Decimal   @db.Decimal(38, 18)
+  currency          String    @default("USDC")
+  level             Int       @default(1)
+  status            String    @default("PENDING")
+  settledAt         DateTime?
+  paidAt            DateTime?
+  canceledAt        DateTime?
+  remark            String?
+  legacyKind        String?
+  legacyId          Int?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  adminLogs CommissionAdminLog[]
+
+  @@unique([sourceType, sourceOrderId, referrerUserId, level])
+  @@index([referrerUserId])
+  @@index([invitedUserId])
+  @@index([sourceOrderId])
+  @@index([sourceType])
+  @@index([status])
+  @@index([createdAt])
+  @@index([inviteCode])
+}
+
+model CommissionRule {
+  id                    String   @id @default("default")
+  enabled               Boolean  @default(true)
+  levelOneRate          Decimal  @db.Decimal(10, 6)
+  levelTwoEnabled       Boolean  @default(false)
+  levelTwoRate          Decimal  @db.Decimal(10, 6)
+  packageCommissionRate Decimal  @db.Decimal(10, 6)
+  gasCommissionRate     Decimal  @db.Decimal(10, 6)
+  minSettlementAmount   Decimal  @db.Decimal(38, 18)
+  settlementCycle       String   @default("DAILY")
+  currency              String   @default("USDC")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+}
+
+model CommissionRiskAlert {
+  id              String    @id
+  level           String
+  type            String
+  title           String
+  description     String
+  relatedRecordId String?
+  relatedOrderId  String?
+  status          String    @default("PENDING")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  resolvedAt      DateTime?
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model CommissionAdminLog {
+  id         String           @id
+  recordId   String
+  record     CommissionRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  adminId    String
+  action     String
+  beforeData Json?
+  afterData  Json?
+  remark     String?
+  createdAt  DateTime         @default(now())
+
+  @@index([recordId])
+  @@index([createdAt])
+}

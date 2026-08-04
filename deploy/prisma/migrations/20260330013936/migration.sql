@@ -1,0 +1,3 @@
+-- This migration was generated before CronLease had been split into its own
+-- later migration. Keep it as a no-op so fresh databases can still apply the
+-- migration chain in timestamp order.

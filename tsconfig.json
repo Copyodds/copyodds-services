@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    "rootDir": ".",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "sourceMap": true
+  },
+  "include": ["src/**/*", "scripts"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/**/*.test.ts",
+    "scripts/simulate-smart-money-*.ts",
+    "scripts/sim-leaderboard-p0-changes.ts",
+    "scripts/sim-l1-usd-drawdown-gate.ts",
+    "scripts/sim-closed-return-metrics.ts"
+  ]
+}

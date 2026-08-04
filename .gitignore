@@ -1,0 +1,21 @@
+node_modules
+# Keep environment variables out of version control
+.env
+.env.*
+# Keep env templates/examples committed for documentation
+!*.env.example
+
+# Deployment-time env files (secrets)
+deploy/.env
+deploy/.env.*
+# Keep deploy env template committed
+!deploy/.env.example
+
+/src/generated/prisma
+
+# Build outputs
+dist/
+deploy/dist/
+
+# 一键部署脚本生成的本地归档（见 scripts/deploy-test.*）
+.deploy/

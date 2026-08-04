@@ -1,0 +1,10 @@
+deploy@VM-0-8-rockylinux:~/polymarket-backend$  npm run diagnose:smart-money
+npm error Missing script: "diagnose:smart-money"
+npm error
+npm error Did you mean this?
+npm error   npm run rescore:smart-money # run the "rescore:smart-money" package script
+npm error
+npm error To see a list of scripts, run:
+npm error   npm run
+npm error A complete log of this run can be found in: /home/deploy/.npm/_logs/2026-07-04T12_04_49_935Z-debug-0.log
+deploy@VM-0-8-rockylinux:~/polymarket-backend$ 
