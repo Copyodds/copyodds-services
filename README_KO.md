@@ -1,6 +1,6 @@
 <div align="center">
 
-[English](README.md) · [简体中文](README_CN.md) · [日本語](README_JA.md) · **한국어** · [Português do Brasil](README_PT-BR.md)
+[English](README.md) · [简体中文](README_CN.md) · [日本語](README_JA.md) · 한국어 · [Português do Brasil](README_PT-BR.md)
 
 # Polymarket Agent Backend
 

@@ -44,9 +44,12 @@ function Normalize-DeployString([string]$s) {
     if ([string]::IsNullOrWhiteSpace($s)) { return $s }
     return ($s -replace "`r", "").Trim()
 }
-$sshHost = Normalize-DeployString $(if ($env:DEPLOY_SSH_HOST) { $env:DEPLOY_SSH_HOST } else { "root@158.247.195.229" })
+$sshHost = Normalize-DeployString $(if ($env:DEPLOY_SSH_HOST) { $env:DEPLOY_SSH_HOST } else { "" })
+if (-not $sshHost) {
+    Write-Error "请设置环境变量 DEPLOY_SSH_HOST（例如 user@your-server）"
+}
 $sshPort = Normalize-DeployString $(if ($env:DEPLOY_SSH_PORT) { $env:DEPLOY_SSH_PORT } else { "443" })
-$remoteAppDir = Normalize-DeployString $(if ($env:DEPLOY_REMOTE_APP_DIR) { $env:DEPLOY_REMOTE_APP_DIR } else { "/root/polymarket-backend" })
+$remoteAppDir = Normalize-DeployString $(if ($env:DEPLOY_REMOTE_APP_DIR) { $env:DEPLOY_REMOTE_APP_DIR } else { "/www/wwwroot/your-backend" })
 $remoteAppDir = $remoteAppDir.TrimEnd('/')
 $remoteArchiveName = "polymarket-backend-deploy.tar.gz"
 $runMigrate = if ($null -ne $env:DEPLOY_RUN_MIGRATE) { $env:DEPLOY_RUN_MIGRATE } else { "1" }

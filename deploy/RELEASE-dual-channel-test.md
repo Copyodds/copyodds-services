@@ -19,7 +19,7 @@
 
 ```bash
 # 本机 PowerShell / Git Bash 示例
-scp -P 443 .deploy/polymarket-backend-deploy.tar.gz root@158.247.195.229:~/
+scp -P 443 .deploy/polymarket-backend-deploy.tar.gz user@your-server:~/
 ```
 
 ---

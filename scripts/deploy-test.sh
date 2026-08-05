@@ -18,9 +18,13 @@ cd "$BACKEND_ROOT"
 
 ########## 可配置区域 ##########
 # tr -d 去掉 CRLF 中的 CR，避免远端路径出现 \#015
-SSH_HOST="$(echo "${DEPLOY_SSH_HOST:-root@158.247.195.229}" | tr -d '\r')"
+SSH_HOST="$(echo "${DEPLOY_SSH_HOST:-}" | tr -d '\r')"
+if [[ -z "$SSH_HOST" ]]; then
+  echo "请设置环境变量 DEPLOY_SSH_HOST（例如 user@your-server）" >&2
+  exit 1
+fi
 SSH_PORT="$(echo "${DEPLOY_SSH_PORT:-443}" | tr -d '\r')"
-REMOTE_APP_DIR="$(echo "${DEPLOY_REMOTE_APP_DIR:-/www/wwwroot/polycopy-backend/current}" | tr -d '\r')"
+REMOTE_APP_DIR="$(echo "${DEPLOY_REMOTE_APP_DIR:-/www/wwwroot/your-backend}" | tr -d '\r')"
 REMOTE_APP_DIR="${REMOTE_APP_DIR%/}"
 SP=""
 if [[ "${DEPLOY_REMOTE_USE_SUDO:-0}" == "1" ]]; then SP="sudo "; fi
@@ -49,9 +53,9 @@ usage() {
   -k <keyfile>    SSH 私钥路径
 
 环境变量（可选）:
-  DEPLOY_SSH_HOST            SSH 目标，默认 admin@test
+  DEPLOY_SSH_HOST            SSH 目标（必填，例如 user@your-server）
   DEPLOY_SSH_PORT            SSH 端口，默认 443
-  DEPLOY_REMOTE_APP_DIR      解压目录，默认 /www/wwwroot/polycopy-backend/deploy/deploy
+  DEPLOY_REMOTE_APP_DIR      解压目录，默认 /www/wwwroot/your-backend
   DEPLOY_SSH_KEY             私钥路径
   DEPLOY_RUN_MIGRATE=0|1     是否远端 migrate deploy
   DEPLOY_SKIP_NPM_INSTALL=1  强制跳过 npm install

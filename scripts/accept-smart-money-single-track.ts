@@ -3,7 +3,7 @@
  *
  * Usage:
  *   npx tsx scripts/accept-smart-money-single-track.ts
- *   SMOKE_BASE_URL=https://test.copyodds.io npx tsx scripts/accept-smart-money-single-track.ts --http
+ *   SMOKE_BASE_URL=https://your-api.example.com npx tsx scripts/accept-smart-money-single-track.ts --http
  *   COPY_INTERNAL_SECRET=... SMOKE_BASE_URL=... npx tsx scripts/accept-smart-money-single-track.ts --http
  */
 import { readFileSync, existsSync } from 'node:fs';
@@ -140,7 +140,10 @@ async function fetchJson(
 }
 
 async function runHttpChecks(): Promise<void> {
-  const base = (process.env.SMOKE_BASE_URL ?? 'https://test.copyodds.io').replace(/\/+$/, '');
+  const base = (process.env.SMOKE_BASE_URL ?? '').replace(/\/+$/, '');
+  if (!base) {
+    throw new Error('请设置 SMOKE_BASE_URL（例如 https://your-api.example.com）');
+  }
   const apiKey = process.env.API_KEY ?? process.env.SMOKE_API_KEY ?? '';
   const secret = process.env.COPY_INTERNAL_SECRET ?? '';
 
