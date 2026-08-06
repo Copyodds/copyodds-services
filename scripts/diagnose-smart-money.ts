@@ -320,7 +320,6 @@ async function main(): Promise<void> {
       `  [根因] 候选池有 ${activeObserved} 人，但 ${activeNeverFetched} 人尚未抓取评分；页面只展示已完成 pipeline 的钱包。`
     );
     console.log('  [修复] npm run rescore:smart-money -- --scope=active --concurrency=4');
-    console.log('         或 POST /api/polymarket/smart-money/admin/run-pipeline');
   } else if (apiTotal < 50 && withActiveCandidate < unionEstimate * 0.3) {
     console.log(
       '  [根因] 大量历史榜行 activeCandidate=false（去掉官方榜后旧地址被踢出候选池）。'

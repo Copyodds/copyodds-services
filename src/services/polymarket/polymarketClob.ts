@@ -846,11 +846,13 @@ async function invalidateSellPrepPersistentCache(params: {
       polymarketSellPrepDeposit: null,
     },
   });
-  console.warn('[clob-user-order] invalidated persistent sell prep cache', {
-    walletId: params.walletId,
-    deposit: params.depositAddress ?? null,
-    reason: params.reason,
-  });
+  if (CONFIG.clobDebugUserTrace) {
+    console.warn('[clob-user-order] invalidated persistent sell prep cache', {
+      walletId: params.walletId,
+      deposit: params.depositAddress ?? null,
+      reason: params.reason,
+    });
+  }
 }
 
 function clobErrorMessage(error: unknown): string {
@@ -926,22 +928,26 @@ async function cancelOpenSellOrdersForToken(
       await client.cancelOrder({ orderID: orderId });
       cancelled.push(orderId);
     } catch (err) {
-      console.warn('[clob-sell-debug] failed to cancel open SELL order', {
-        ...meta,
-        tokenID,
-        orderId,
-        error: clobErrorMessage(err),
-      });
+      if (CONFIG.clobDebugUserTrace) {
+        console.warn('[clob-sell-debug] failed to cancel open SELL order', {
+          ...meta,
+          tokenID,
+          orderId,
+          error: clobErrorMessage(err),
+        });
+      }
     }
   }
 
   if (cancelled.length > 0) {
-    console.info('[clob-sell-debug] cancelled open SELL orders to free conditional balance', {
-      ...meta,
-      tokenID,
-      cancelledCount: cancelled.length,
-      cancelledOrderIds: cancelled,
-    });
+    if (CONFIG.clobDebugUserTrace) {
+      console.info('[clob-sell-debug] cancelled open SELL orders to free conditional balance', {
+        ...meta,
+        tokenID,
+        cancelledCount: cancelled.length,
+        cancelledOrderIds: cancelled,
+      });
+    }
   }
 
   return cancelled;
@@ -1256,10 +1262,12 @@ async function postOrderWithBalanceAllowanceRetry(
   },
   timingOut?: ClobSignPostTiming
 ) {
-  console.log(
-    '[clob-order-request]',
-    buildCreateOrderRequestLog(params, options, orderType, { ...meta, stage: 'first_attempt' })
-  );
+  if (CONFIG.clobDebugUserTrace) {
+    console.log(
+      '[clob-order-request]',
+      buildCreateOrderRequestLog(params, options, orderType, { ...meta, stage: 'first_attempt' })
+    );
+  }
 
   try {
     return await createAndPostOrderSplit(client, params, options, orderType, timingOut);
@@ -1269,10 +1277,12 @@ async function postOrderWithBalanceAllowanceRetry(
     }
 
     if (meta.side === 'BUY') {
-      console.warn('[clob-buy-debug] balance/allowance rejected by CLOB, refreshing allowance and retrying once', {
-        ...meta,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (CONFIG.clobDebugUserTrace) {
+        console.warn('[clob-buy-debug] balance/allowance rejected by CLOB, refreshing allowance and retrying once', {
+          ...meta,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       await logClobBalanceAllowance(client, { ...meta, stage: 'after_update' });
       await logOpenOrdersDebug(client, { ...meta, stage: 'after_update' });
       await client.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
@@ -1282,11 +1292,13 @@ async function postOrderWithBalanceAllowanceRetry(
       await logClobBalanceAllowance(client, { ...meta, stage: 'after_retry_update' });
       await logOpenOrdersDebug(client, { ...meta, stage: 'after_retry_update' });
     } else {
-      console.warn('[clob-sell-debug] balance/allowance rejected by CLOB, refreshing conditional allowance and retrying once', {
-        ...meta,
-        error: clobErrorMessage(error),
-        balanceLockedByActiveOrders: isClobBalanceLockedByActiveOrders(error),
-      });
+      if (CONFIG.clobDebugUserTrace) {
+        console.warn('[clob-sell-debug] balance/allowance rejected by CLOB, refreshing conditional allowance and retrying once', {
+          ...meta,
+          error: clobErrorMessage(error),
+          balanceLockedByActiveOrders: isClobBalanceLockedByActiveOrders(error),
+        });
+      }
       if (isClobBalanceLockedByActiveOrders(error)) {
         await cancelOpenSellOrdersForToken(client, params.tokenID, {
           scope: meta.scope,
@@ -1306,10 +1318,12 @@ async function postOrderWithBalanceAllowanceRetry(
       await logClobBalanceAllowance(client, { ...meta, stage: 'after_retry_update' });
       await logOpenOrdersDebug(client, { ...meta, stage: 'after_retry_update' });
     }
-    console.log(
-      '[clob-order-request]',
-      buildCreateOrderRequestLog(params, options, orderType, { ...meta, stage: 'retry_attempt' })
-    );
+    if (CONFIG.clobDebugUserTrace) {
+      console.log(
+        '[clob-order-request]',
+        buildCreateOrderRequestLog(params, options, orderType, { ...meta, stage: 'retry_attempt' })
+      );
+    }
 
     if (timingOut) {
       timingOut.retried = true;
@@ -1363,12 +1377,14 @@ async function postSellMarketCloseWithRetry(
   },
   timingOut?: ClobSignPostTiming
 ) {
-  console.log('[clob-sell-market-close]', {
-    ...meta,
-    amount: params.size,
-    orderType: OrderType.FAK,
-    stage: 'first_attempt',
-  });
+  if (CONFIG.clobDebugUserTrace) {
+    console.log('[clob-sell-market-close]', {
+      ...meta,
+      amount: params.size,
+      orderType: OrderType.FAK,
+      stage: 'first_attempt',
+    });
+  }
 
   try {
     return await createAndPostSellMarketClose(client, params, options, timingOut);
@@ -1381,11 +1397,13 @@ async function postSellMarketCloseWithRetry(
     if (!isClobBalanceAllowanceError(error)) {
       throw error;
     }
-    console.warn('[clob-sell-market-close] balance/allowance rejected, refreshing conditional allowance and retrying once', {
-      ...meta,
-      error: clobErrorMessage(error),
-      balanceLockedByActiveOrders: isClobBalanceLockedByActiveOrders(error),
-    });
+    if (CONFIG.clobDebugUserTrace) {
+      console.warn('[clob-sell-market-close] balance/allowance rejected, refreshing conditional allowance and retrying once', {
+        ...meta,
+        error: clobErrorMessage(error),
+        balanceLockedByActiveOrders: isClobBalanceLockedByActiveOrders(error),
+      });
+    }
     await invalidateSellPrepPersistentCache({
       walletId: meta.walletId,
       depositAddress: meta.depositAddress,
@@ -1411,12 +1429,14 @@ async function postSellMarketCloseWithRetry(
     if (timingOut) {
       timingOut.retried = true;
     }
-    console.log('[clob-sell-market-close]', {
-      ...meta,
-      amount: params.size,
-      orderType: OrderType.FAK,
-      stage: 'retry_attempt',
-    });
+    if (CONFIG.clobDebugUserTrace) {
+      console.log('[clob-sell-market-close]', {
+        ...meta,
+        amount: params.size,
+        orderType: OrderType.FAK,
+        stage: 'retry_attempt',
+      });
+    }
     try {
       return await createAndPostSellMarketClose(client, params, options, timingOut);
     } catch (retryError) {
@@ -1678,7 +1698,7 @@ export async function createAndPostOrderForUser(
         clobClient: client,
       });
       const cached = pusdReady.relayerWalletCreateState === 'CACHED';
-      if (!cached) {
+      if (!cached && CONFIG.clobDebugUserTrace) {
         console.info('[clob-user-order] deposit pUSD ready', {
           userId,
           deposit: dep,
@@ -1730,7 +1750,7 @@ export async function createAndPostOrderForUser(
       depositAddress: dep,
     });
     const cached = relayerResult.relayerWalletCreateState === 'CACHED';
-    if (!cached) {
+    if (!cached && CONFIG.clobDebugUserTrace) {
       console.info('[clob-user-order] deposit relayer approvals', {
         userId,
         deposit: dep,
@@ -1863,12 +1883,14 @@ export async function createAndPostOrderForUser(
         );
       }
       if (capped + 1e-6 < params.size) {
-        console.info('[clob-sell-market-close] capped requested size to CLOB available conditional balance', {
-          userId,
-          tokenID: params.tokenID,
-          requestedSize: params.size,
-          availableSize: capped,
-        });
+        if (CONFIG.clobDebugUserTrace) {
+          console.info('[clob-sell-market-close] capped requested size to CLOB available conditional balance', {
+            userId,
+            tokenID: params.tokenID,
+            requestedSize: params.size,
+            availableSize: capped,
+          });
+        }
       }
       orderParams = { ...params, size: capped };
     }
@@ -1898,14 +1920,16 @@ export async function createAndPostOrderForUser(
                   walletId: ctx.walletId,
                   depositAddress: dep,
                 });
-                console.info('[clob-user-order] refreshed sell prep after CLOB rejection', {
-                  userId,
-                  walletId: ctx.walletId,
-                  deposit: dep,
-                  ran: relayerResult.ran,
-                  callCount: relayerResult.callCount,
-                  relayerWalletCreateState: relayerResult.relayerWalletCreateState,
-                });
+                if (CONFIG.clobDebugUserTrace) {
+                  console.info('[clob-user-order] refreshed sell prep after CLOB rejection', {
+                    userId,
+                    walletId: ctx.walletId,
+                    deposit: dep,
+                    ran: relayerResult.ran,
+                    callCount: relayerResult.callCount,
+                    relayerWalletCreateState: relayerResult.relayerWalletCreateState,
+                  });
+                }
               }
             : undefined,
         },

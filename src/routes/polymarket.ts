@@ -31,16 +31,10 @@ import {
   SmartMoneyProfileTradesFetchError,
 } from '../services/smartMoney/smartMoneyProfileTrades';
 import { authRateLimit } from '../middlewares/authRateLimit';
-import { runSmartMoneyCandidatePipeline } from '../services/smartMoney/smartMoneyCron';
-import { getSmartMoneyLeaderboardObservability } from '../services/smartMoney/smartMoneyLeaderboardWriter';
 import {
   buildSmartMoneyCachedApiMeta,
   smartMoneyCachedDisplayWhere,
 } from '../services/smartMoney/smartMoneyCachedQuery';
-import {
-  runSmartMoneyPipelineDeepBatch,
-  runSmartMoneyPipelineLightBatch,
-} from '../services/smartMoney/smartMoneyPipelineCron';
 import { runDeepAnalyzeForWallet } from '../services/smartMoney/smartMoneyDeepAnalyze';
 import { ingestSmartMoneyRawAddresses } from '../services/smartMoney/smartMoneyRawIngest';
 import { checkSmartMoneyProfileRiskCopyPool } from '../services/smartMoney/smartMoneyProfileRiskCopyPoolGate';
@@ -757,17 +751,6 @@ const smartMoneyProfileTradesQuerySchema = z.object({
     .preprocess((v) => (typeof v === 'string' ? Number(v) : v), z.number().int().min(0).max(3000))
     .optional()
     .default(0),
-});
-
-const smartMoneyAdminRunPipelineBodySchema = z.object({
-  mode: z.enum(['candidate', 'fetch', 'pipeline']).optional().default('pipeline'),
-  fetchMode: z.enum(['bootstrap', 'steady', 'follow-up']).optional(),
-  fetchLimit: z
-    .preprocess((v) => (typeof v === 'string' ? Number(v) : v), z.number().int().min(1).max(5000))
-    .optional(),
-  fetchConcurrency: z
-    .preprocess((v) => (typeof v === 'string' ? Number(v) : v), z.number().int().min(1).max(50))
-    .optional(),
 });
 
 const authBodySchema = z.union([
@@ -1911,65 +1894,6 @@ router.get(
     }
   }
 );
-
-/**
- * POST /api/polymarket/smart-money/admin/run-pipeline
- * 测试/运维用：手动触发聪明钱候选同步/抓取评分流水线，便于测试服快速补齐缓存。
- */
-router.post('/smart-money/admin/run-pipeline', jwtAuth, async (req, res, next) => {
-  const parsed = smartMoneyAdminRunPipelineBodySchema.safeParse(req.body ?? {});
-  if (!parsed.success) {
-    fail(res, Code.VALIDATION_FAILED, 'Validation failed', 400, {
-      details: parsed.error.flatten(),
-    });
-    return;
-  }
-
-  try {
-    if (!req.user) {
-      fail(res, Code.UNAUTHORIZED, 'Unauthorized', 401);
-      return;
-    }
-
-    const q = parsed.data;
-    const startedAt = Date.now();
-    const result =
-      q.mode === 'candidate'
-        ? await runSmartMoneyCandidatePipeline('admin:manual')
-        : q.mode === 'fetch'
-          ? await runSmartMoneyPipelineLightBatch('admin:manual:light')
-          : {
-              candidate: await runSmartMoneyCandidatePipeline('admin:manual'),
-              light: await runSmartMoneyPipelineLightBatch('admin:manual:light'),
-              deep: await runSmartMoneyPipelineDeepBatch('admin:manual:deep'),
-            };
-
-    success(res, {
-      mode: q.mode,
-      elapsedMs: Date.now() - startedAt,
-      result,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-/**
- * GET /api/polymarket/smart-money/admin/observability
- * 测试/运维用：查看聪明钱榜缓存健康度（用于定位为何 cached 返回大量 null/空）。
- */
-router.get('/smart-money/admin/observability', jwtAuth, async (req, res, next) => {
-  try {
-    if (!req.user) {
-      fail(res, Code.UNAUTHORIZED, 'Unauthorized', 401);
-      return;
-    }
-    const data = await getSmartMoneyLeaderboardObservability();
-    success(res, data);
-  } catch (err) {
-    next(err);
-  }
-});
 
 /**
  * POST /api/polymarket/smart-money/profile-risk/analyze

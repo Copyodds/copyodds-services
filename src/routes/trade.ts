@@ -271,16 +271,7 @@ function toTradingRouteError(error: unknown) {
   return null;
 }
 
-/** 下单实验室：需 ENABLE_ORDER_LAB=true，否则 404 */
-function orderLabGuard(_req: Request, res: Response, next: NextFunction) {
-  if (!CONFIG.enableOrderLab) {
-    fail(res, Code.FEATURE_DISABLED, 'Not found', 404);
-    return;
-  }
-  next();
-}
-
-/** 平台钱包 CLOB 接口：生产默认关闭，需 ENABLE_PLATFORM_TRADE_ROUTES=true */
+/** 平台钱包 CLOB 接口：默认关闭，需 ENABLE_PLATFORM_TRADE_ROUTES=true */
 function platformTradeGuard(_req: Request, res: Response, next: NextFunction) {
   if (!CONFIG.enablePlatformTradeRoutes) {
     fail(res, Code.FEATURE_DISABLED, 'Not found', 404);
@@ -601,103 +592,6 @@ router.post('/user/orders', jwtAuth, requireUserTradePermission, async (req: Req
       partialFill: isPartialSell || undefined,
       filledSize: isPartialSell ? filledSize : undefined,
       requestedSize: isPartialSell ? parsed.data.size : undefined,
-    });
-  } catch (err) {
-    const appError = toTradingRouteError(err);
-    if (appError) {
-      next(appError);
-      return;
-    }
-    next(err);
-  }
-});
-
-/**
- * GET /api/trade/lab/status
- * 本地/联调：展示 CLOB 执行地址、平台 Gas、入金说明。需 ENABLE_ORDER_LAB=true + 登录。
- * 站内 UserAsset 账本与 Polymarket 保证金链上余额分离：真实买单依赖 deposit（funder）上的 USDC。
- */
-router.get('/lab/status', jwtAuth, orderLabGuard, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    if (!req.user) {
-      fail(res, Code.UNAUTHORIZED, 'Unauthorized', 401);
-      return;
-    }
-    const userId = req.user.userId;
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { gasBalance: true },
-    });
-    let executionAddress: string | null = null;
-    let executionMode: string | null = null;
-    let executionError: string | null = null;
-    try {
-      const ctx = await getExecutionWalletForUser(userId);
-      executionAddress = ctx.address;
-      executionMode = ctx.mode;
-    } catch (e) {
-      executionError = e instanceof Error ? e.message : String(e);
-    }
-    success(res, {
-      chainId: CONFIG.chainId,
-      clobHost: CONFIG.clobHost,
-      executionAddress,
-      executionMode,
-      executionError,
-      gasBalance: user?.gasBalance != null ? String(user.gasBalance) : '0',
-      fundingNote:
-        'Polymarket BUY collateral is USDC on your deposit (POLY_1271 funder) address on Polygon. ' +
-        'Internal UserAsset balances (copy-trade / mall) are separate and do not fund Polymarket orders. ' +
-        'Send USDC to the deposit address; the server normalizes balances and allowances for CLOB as needed.',
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-/**
- * POST /api/trade/lab/orders
- * 与 POST /api/trade/user/orders 相同业务，仅在下实验室开关开启时可访问（避免误用生产）。
- */
-router.post('/lab/orders', jwtAuth, requireUserTradePermission, orderLabGuard, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    if (!req.user) {
-      fail(res, Code.UNAUTHORIZED, 'Unauthorized', 401);
-      return;
-    }
-    const parsed = postOrderBodySchema.safeParse(req.body);
-    if (!parsed.success) {
-      fail(res, Code.VALIDATION_FAILED, 'Validation failed', 400, {
-        details: parsed.error.flatten().fieldErrors,
-      });
-      return;
-    }
-
-    const result = await createAndPostOrderForUser(req.user.userId, parsed.data, parsed.data.address);
-    if (result?.success === false) {
-      const msg = result?.errorMsg ?? 'Order failed';
-      fail(res, Code.BAD_REQUEST, msg, 400, { orderID: result?.orderID });
-      return;
-    }
-    // eslint-disable-next-line no-console
-    console.info('[order-lab] order ok', {
-      userId: req.user.userId,
-      orderID: result?.orderID,
-      tokenID: parsed.data.tokenID,
-    });
-    void markUserPositionScanActiveBestEffort({
-      userId: req.user.userId,
-      hasOpenPosition: true,
-      source: 'lab_order',
-    });
-    success(res, {
-      addressUsed: parsed.data.address,
-      orderID: result?.orderID,
-      status: result?.status,
-      success: result?.success,
-      transactionsHashes: result?.transactionsHashes,
-      takingAmount: result?.takingAmount,
-      makingAmount: result?.makingAmount,
     });
   } catch (err) {
     const appError = toTradingRouteError(err);

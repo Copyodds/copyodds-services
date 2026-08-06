@@ -71,7 +71,11 @@ function normalizeOrigin(origin: string): string {
 function isOriginAllowed(origin: string): boolean {
   const normalizedOrigin = normalizeOrigin(origin);
   if (!CONFIG.corsAllowedOrigins.length) {
-    return !isProduction();
+    // Empty whitelist: deny in production; localhost-only in other envs (never allow-all).
+    if (isProduction()) {
+      return false;
+    }
+    return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(normalizedOrigin);
   }
   return CONFIG.corsAllowedOrigins.some((allowedOriginRaw) => {
     const allowedOrigin = allowedOriginRaw.trim();

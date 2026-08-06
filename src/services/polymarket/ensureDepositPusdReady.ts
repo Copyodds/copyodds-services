@@ -23,7 +23,6 @@ import {
   runWithDepositRelayerFailover,
   waitRelayerTxSuccess,
 } from './polymarketRelayerDeposit';
-import { getAllPolymarketCollateralSpenders } from './polymarketContractSpenders';
 import { parseClobCollateralBalanceToWei6 } from './polymarketClob';
 import { tryAutoWrapPolymarketDepositUsdce } from './polymarketDepositAutoWrap';
 import {
@@ -31,23 +30,8 @@ import {
   getNativeUsdcBalance,
   getPusdBalance,
   getUsdcBalance,
-  publicClient,
   PUSD_TOKEN,
-  USDC_E_TOKEN,
 } from './web3';
-
-const ERC20_ALLOWANCE_ABI = [
-  {
-    type: 'function',
-    name: 'allowance',
-    stateMutability: 'view',
-    inputs: [
-      { name: 'owner', type: 'address' },
-      { name: 'spender', type: 'address' },
-    ],
-    outputs: [{ type: 'uint256' }],
-  },
-] as const;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -60,25 +44,6 @@ function clobAllowanceBalanceToRawString(ba: unknown): string {
   if (typeof b === 'string') return b;
   if (typeof b === 'number') return Number.isFinite(b) ? String(b) : '';
   return String(b);
-}
-
-async function readPusdAllowanceBySpender(deposit: Address): Promise<Record<string, string>> {
-  const spenders = getAllPolymarketCollateralSpenders();
-  const out: Record<string, string> = {};
-  for (const s of spenders) {
-    try {
-      const a = await publicClient.readContract({
-        address: PUSD_TOKEN,
-        abi: ERC20_ALLOWANCE_ABI,
-        functionName: 'allowance',
-        args: [getAddress(deposit), getAddress(s as `0x${string}`)],
-      });
-      out[s] = a.toString();
-    } catch {
-      out[s] = 'read_failed';
-    }
-  }
-  return out;
 }
 
 async function readClobCollateralBalanceWei6(client: ClobClient): Promise<bigint> {
@@ -159,16 +124,6 @@ export async function ensureDepositPusdReady(
 
   if (needWrap && depositUsdcERaw < shortfall) {
     if (depositUsdcERaw > 0n && depositPusdRaw === 0n && !isPolymarketRelayerBuilderConfigured()) {
-      console.log('[deposit-collateral-debug]', {
-        depositAddress: deposit,
-        usdcEToken: USDC_E_TOKEN,
-        pUsdToken: PUSD_TOKEN,
-        depositUsdcERaw: depositUsdcERaw.toString(),
-        depositPusdRaw: depositPusdRaw.toString(),
-        requiredPusdRaw: requiredPusdAmountRaw.toString(),
-        wrapRequired: true,
-        collateralTokenUsedForClob: PUSD_TOKEN,
-      });
       throw createConflictError(
         'Deposit wallet has USDC.e but no pUSD. CLOB V2 requires pUSD collateral. Please wrap USDC.e to pUSD first.',
         {
@@ -191,16 +146,6 @@ export async function ensureDepositPusdReady(
 
   if (needRelayerOnChain && !isPolymarketRelayerBuilderConfigured()) {
     if (depositUsdcERaw > 0n && depositPusdRaw === 0n) {
-      console.log('[deposit-collateral-debug]', {
-        depositAddress: deposit,
-        usdcEToken: USDC_E_TOKEN,
-        pUsdToken: PUSD_TOKEN,
-        depositUsdcERaw: depositUsdcERaw.toString(),
-        depositPusdRaw: depositPusdRaw.toString(),
-        requiredPusdRaw: requiredPusdAmountRaw.toString(),
-        wrapRequired: true,
-        collateralTokenUsedForClob: PUSD_TOKEN,
-      });
       throw createConflictError(
         'Deposit wallet has USDC.e but no pUSD. CLOB V2 requires pUSD collateral. Please wrap USDC.e to pUSD first.',
         {
@@ -306,42 +251,6 @@ export async function ensureDepositPusdReady(
     await clobClient.updateBalanceAllowance({ asset_type: AssetType.COLLATERAL });
     clobBalanceAfterUpdate = await readClobCollateralBalanceWei6(clobClient);
   }
-
-  const pUsdAllowanceBySpender = CONFIG.clobDebugUserTrace
-    ? await readPusdAllowanceBySpender(deposit)
-    : {};
-
-  let clobAllowanceAfterUpdate: unknown;
-  try {
-    const c = clobClient as unknown as {
-      getBalanceAllowance?: (p: { asset_type: AssetType }) => Promise<unknown>;
-    };
-    clobAllowanceAfterUpdate =
-      typeof c.getBalanceAllowance === 'function'
-        ? await c.getBalanceAllowance({ asset_type: AssetType.COLLATERAL })
-        : null;
-  } catch {
-    clobAllowanceAfterUpdate = null;
-  }
-
-  console.log('[deposit-collateral-debug]', {
-    depositAddress: deposit,
-    usdcEToken: USDC_E_TOKEN,
-    pUsdToken: PUSD_TOKEN,
-    depositUsdcERaw: depositUsdcERaw.toString(),
-    depositPusdRaw: depositPusdRaw.toString(),
-    requiredPusdRaw: requiredPusdAmountRaw.toString(),
-    wrapRequired,
-    wrapTxId: wrapTxId ?? null,
-    wrapTxHash: wrapTxHash ?? null,
-    pUsdAllowanceBySpender,
-    clobBalanceBeforeUpdate: clobBalanceBeforeUpdate.toString(),
-    clobBalanceAfterUpdate: clobBalanceAfterUpdate.toString(),
-    clobAllowanceAfterUpdate,
-    collateralTokenUsedForClob: PUSD_TOKEN,
-    onchainDeployed: registerOutcome.onchainDeployed,
-    relayerWalletCreateState: registerOutcome.relayerWalletCreateState,
-  });
 
   if (clobBalanceAfterUpdate < requiredPusdAmountRaw) {
     throw createConflictError(

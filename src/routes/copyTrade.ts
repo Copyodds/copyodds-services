@@ -12,7 +12,6 @@ import { isAppError } from '../utils/appError';
 import { Code, success, fail } from '../utils/response';
 import { toPublicCopyRelation } from '../utils/publicApiPayload';
 import { encryptPolymarketSecret } from '../utils/polymarketCredentialCrypto';
-import { handleLeaderOrder } from '../services/trading/followEngine';
 import { publishRobotControlEvent } from '../copyTrading/events/publishRobotControlEvent';
 import type { RobotControlEventType } from '../copyTrading/events/robotControlSubjects';
 import {
@@ -4639,48 +4638,6 @@ copyTradeRouter.get('/public/recent-mirrored-trades', async (req, res, next: Nex
       };
     });
     success(res, { items });
-  } catch (err) {
-    next(err);
-  }
-});
-
-const simulateLeaderOrderSchema = z.object({
-  leaderAddress: addressSchema,
-  tokenID: z.string().min(1),
-  price: z.number().positive(),
-  size: z.number().positive(),
-  side: z.enum(['BUY', 'SELL']),
-});
-
-// 开发模式：模拟「检测到 leader 下单」，触发跟单引擎写入 CopyExecution
-copyTradeRouter.post('/dev/simulate-leader-order', jwtAuth, requireUserTradePermission, async (req, res, next: NextFunction) => {
-  try {
-    if ((process.env.NODE_ENV ?? '').toLowerCase() === 'production') {
-      fail(res, Code.NOT_FOUND, 'Not found', 404);
-      return;
-    }
-
-    const userId = Number(req.user?.userId);
-    if (!Number.isInteger(userId) || userId <= 0) {
-      fail(res, Code.UNAUTHORIZED, 'Unauthorized', 401);
-      return;
-    }
-
-    const parsed = simulateLeaderOrderSchema.safeParse(req.body);
-    if (!parsed.success) {
-      fail(res, Code.VALIDATION_FAILED, 'Invalid request body', 400, { details: parsed.error.issues });
-      return;
-    }
-
-    await handleLeaderOrder({
-      leaderAddress: parsed.data.leaderAddress.toLowerCase(),
-      tokenID: parsed.data.tokenID,
-      price: parsed.data.price,
-      size: parsed.data.size,
-      side: parsed.data.side,
-    });
-
-    success(res, { ok: true });
   } catch (err) {
     next(err);
   }

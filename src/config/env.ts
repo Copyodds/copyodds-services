@@ -2003,14 +2003,9 @@ export const CONFIG = {
   tradingExecutionMode: getTradingExecutionMode(),
   /**
    * 为 true 时开放「平台钱包」交易接口：POST/DELETE /api/trade/orders、GET /orders、GET /trades。
-   * 生产环境默认关闭；仅在内网或明确需要时启用。
+   * 默认关闭；仅在内网或明确需要时设置 ENABLE_PLATFORM_TRADE_ROUTES=true。
    */
   enablePlatformTradeRoutes: getEnablePlatformTradeRoutes(),
-  /**
-   * 为 true 时开放「下单实验室」：GET/POST /api/trade/lab/*（需登录 + API Key）。
-   * 默认 false；生产环境务必保持 false，除非明确要暴露。
-   */
-  enableOrderLab: getBooleanEnv('ENABLE_ORDER_LAB', false),
   /** 平台 CLOB 下单扣 Gas 所用用户 ID（须提前为该用户充值 Gas） */
   platformGasUserId: getPlatformGasUserId(),
 
@@ -2261,8 +2256,6 @@ if (_rpcUrlForSsrfWarn.startsWith('http://') && !/localhost|127\.0\.0\.1/i.test(
 }
 
 function getEnablePlatformTradeRoutes(): boolean {
-  if (isProd()) {
-    return process.env.ENABLE_PLATFORM_TRADE_ROUTES === 'true';
-  }
-  return process.env.ENABLE_PLATFORM_TRADE_ROUTES !== 'false';
+  // Opt-in everywhere (including non-prod). Never default open for OSS/staging hosts.
+  return process.env.ENABLE_PLATFORM_TRADE_ROUTES === 'true';
 }

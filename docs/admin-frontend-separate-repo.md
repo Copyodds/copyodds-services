@@ -15,7 +15,7 @@
 | 鉴权 | 管理员通过 **`POST /api/admin/auth/login`** 建立会话；浏览器需对 API 域名携带 **Cookie**（`credentials: 'include'`） |
 | 生产安全 | 办公室 IP 白名单见 [admin-ip-whitelist-deploy.md](./admin-ip-whitelist-deploy.md) |
 
-后端已启用 CORS：`origin: true`、`credentials: true`（见 `src/server.ts`），便于本地 Admin（如 `localhost:3010`）请求远端 API（如 `localhost:3000`）。
+后端 CORS：需配置 `CORS_ALLOWED_ORIGINS` 白名单；未配置时生产拒绝跨域，非生产仅允许 `localhost` / `127.0.0.1`（见 `src/server.ts`）。
 
 ---
 
