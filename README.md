@@ -121,3 +121,21 @@ See [deploy/README.md](deploy/README.md) and [docs/production-launch-checklist.m
 - **Blockchain:** ethers.js, viem, Polygon (chain 137)
 - **Messaging:** NATS (copy-trade robot control)
 - **Observability:** pino logging, prom-client metrics
+
+## Disclaimer & Acceptable Use
+
+This software is provided **as is**, without warranty of any kind, express or implied.
+
+**Authorization required.** Access to, use of, modification of, deployment of, or redistribution of this software (including any production or commercial deployment) requires **prior written authorization** from the copyright holders / project maintainers. Unauthorized use is prohibited. Contact the maintainers to request permission.
+
+**Not affiliated.** This project is an independent third-party effort and is **not** affiliated with, endorsed by, sponsored by, or officially connected to Polymarket, Polygon, or any related entity. All trademarks belong to their respective owners and are used only for descriptive / interoperability purposes.
+
+**Jurisdiction & legality.** You may **not** use, offer, operate, host, or make this software available in any country, region, or to any person where prediction markets, copy trading, automated trading, custodial wallet services, or related activities are restricted or prohibited by applicable law. It is **your sole responsibility** to determine whether your intended use is lawful in your jurisdiction before requesting authorization or using this software. Where local law does not permit such activity, this software must **not** be opened, deployed, or provided to users there.
+
+**No financial advice.** Nothing in this repository constitutes investment, trading, legal, tax, or financial advice. Prediction-market and cryptocurrency trading involve substantial risk of loss, including total loss of funds.
+
+**Use at your own risk.** Even with authorization, you remain solely responsible for configuration, security (private keys, custody encryption keys, API secrets, wallet infrastructure), compliance (including AML/KYC, sanctions, securities, gambling, and tax rules where applicable), and all outcomes. The authors and contributors are **not liable** for any loss of funds, data, profits, damages, or regulatory consequences arising from use of this software.
+
+**Educational / research context.** Source code may be published for educational and research discussion under the terms of the [LICENSE](LICENSE), subject to the authorization and jurisdiction restrictions above. Production use of copy-trading, custodial wallets, or automated order execution is permitted **only** with prior written authorization and **only** where lawful.
+
+If you do not have authorization, or if your local law does not permit this activity, **do not use this software**.

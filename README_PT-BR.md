@@ -121,3 +121,21 @@ Consulte [deploy/README.md](deploy/README.md) e [docs/production-launch-checklis
 - **Blockchain:** ethers.js, viem, Polygon (chain 137)
 - **Mensageria:** NATS (controle de robô copy trade)
 - **Observabilidade:** logging pino, métricas prom-client
+
+## Aviso Legal e Uso Aceitável
+
+Este software é fornecido **no estado em que se encontra**, sem qualquer garantia, expressa ou implícita.
+
+**Autorização obrigatória.** O acesso, uso, modificação, implantação ou redistribuição deste software (incluindo qualquer implantação em produção ou comercial) exige **autorização prévia por escrito** dos titulares dos direitos autorais / mantenedores do projeto. O uso não autorizado é proibido. Entre em contato com os mantenedores para solicitar permissão.
+
+**Sem afiliação.** Este projeto é um esforço independente de terceiros e **não** é afiliado, endossado, patrocinado ou oficialmente conectado à Polymarket, Polygon ou qualquer entidade relacionada. Todas as marcas comerciais pertencem aos respectivos proprietários e são usadas apenas para fins descritivos / de interoperabilidade.
+
+**Jurisdição e legalidade.** Você **não** pode usar, oferecer, operar, hospedar ou disponibilizar este software em qualquer país, região ou a qualquer pessoa onde mercados de previsão, copy trading, negociação automatizada, serviços de carteira custodial ou atividades relacionadas sejam restringidos ou proibidos pela lei aplicável. É **sua exclusiva responsabilidade** determinar se o uso pretendido é lícito em sua jurisdição antes de solicitar autorização ou usar este software. Onde a lei local não permitir tal atividade, este software **não** deve ser aberto, implantado ou fornecido a usuários nesse local.
+
+**Não é aconselhamento financeiro.** Nada neste repositório constitui aconselhamento de investimento, negociação, jurídico, fiscal ou financeiro. Negociação em mercados de previsão e criptomoedas envolve risco substancial de perda, incluindo perda total de fundos.
+
+**Use por sua conta e risco.** Mesmo com autorização, você permanece exclusivamente responsável pela configuração, segurança (chaves privadas, chaves de criptografia de custódia, segredos de API, infraestrutura de carteira), conformidade (incluindo AML/KYC, sanções, valores mobiliários, jogos de azar e regras fiscais, conforme aplicável) e por todos os resultados. Os autores e contribuidores **não se responsabilizam** por qualquer perda de fundos, dados, lucros, danos ou consequências regulatórias decorrentes do uso deste software.
+
+**Contexto educacional / de pesquisa.** O código-fonte pode ser publicado para discussão educacional e de pesquisa nos termos da [LICENSE](LICENSE), sujeito às restrições de autorização e jurisdição acima. O uso em produção de copy trading, carteiras custodiais ou execução automatizada de ordens é permitido **somente** com autorização prévia por escrito e **somente** onde for lícito.
+
+Se você não tiver autorização, ou se a lei local não permitir esta atividade, **não use este software**.
