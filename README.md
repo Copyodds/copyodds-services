@@ -10,6 +10,8 @@ A production-grade Node.js backend that powers user auth, copy-trade execution, 
 
 [Official Website](https://app.copyodds.io/) - Start using CopyOdds now.
 
+[Telegram Bot](https://t.me/copyodds_bot) - Open `@copyodds_bot` for wallet updates, portfolio checks, and CopyOdds support.
+
 [![Node.js](https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Prisma-4169E1?logo=postgresql&logoColor=white)](https://www.prisma.io/)
@@ -30,6 +32,15 @@ A production-grade Node.js backend that powers user auth, copy-trade execution, 
 | **Virtual Copy** | Paper-trading simulation with order-book fill and settlement |
 | **Auth & Security** | JWT sessions, Passkey, TOTP step-up, SSRF guards, internal secret routes |
 | **Admin** | Dashboard cron, risk controls, affiliate tiers, gas packages |
+
+## Trust & Safety
+
+This repository is designed for teams that care about operational reliability, transparent risk controls, and responsible deployment.
+
+- **Security-first defaults:** JWT-backed sessions, passkeys, TOTP step-up for sensitive flows, SSRF guardrails, request size limits, secret-based internal routes, and structured log redaction.
+- **Financial controls:** funding checks, retry boundaries, copy-trade risk gates, settlement/redeem safeguards, audit events, and admin visibility for operational review.
+- **Operational transparency:** Prisma migrations, health checks, worker separation, metrics, production checklists, and documented API behavior.
+- **Deployment responsibility:** production operators are expected to use strong secrets, private infrastructure for wallet services, restricted admin access, monitoring, backups, and jurisdiction-specific compliance review.
 
 ## Quick Start
 
@@ -122,20 +133,18 @@ See [deploy/README.md](deploy/README.md) and [docs/production-launch-checklist.m
 - **Messaging:** NATS (copy-trade robot control)
 - **Observability:** pino logging, prom-client metrics
 
-## Disclaimer & Acceptable Use
+## Disclaimer & Responsible Use
 
-This software is provided **as is**, without warranty of any kind, express or implied.
+This software is provided **as is**, without warranty of any kind, express or implied. It is shared for engineering review, education, research, and authorized deployments only.
 
-**Authorization required.** Access to, use of, modification of, deployment of, or redistribution of this software (including any production or commercial deployment) requires **prior written authorization** from the copyright holders / project maintainers. Unauthorized use is prohibited. Contact the maintainers to request permission.
+**Independent project.** This repository is an independent third-party project. It is not affiliated with, endorsed by, sponsored by, or officially connected to Polymarket, Polygon, or any related entity. All trademarks belong to their respective owners and are used only for descriptive or interoperability purposes.
 
-**Not affiliated.** This project is an independent third-party effort and is **not** affiliated with, endorsed by, sponsored by, or officially connected to Polymarket, Polygon, or any related entity. All trademarks belong to their respective owners and are used only for descriptive / interoperability purposes.
+**No financial advice.** Nothing in this repository is investment, trading, legal, tax, or financial advice. Prediction-market and cryptocurrency activity can involve substantial risk, including total loss of funds.
 
-**Jurisdiction & legality.** You may **not** use, offer, operate, host, or make this software available in any country, region, or to any person where prediction markets, copy trading, automated trading, custodial wallet services, or related activities are restricted or prohibited by applicable law. It is **your sole responsibility** to determine whether your intended use is lawful in your jurisdiction before requesting authorization or using this software. Where local law does not permit such activity, this software must **not** be opened, deployed, or provided to users there.
+**Compliance is your responsibility.** You are responsible for confirming that any use, hosting, copy-trading, automated execution, custodial wallet operation, or related activity is lawful in every jurisdiction where you operate or serve users. Do not use or provide this software where such activity is restricted or prohibited.
 
-**No financial advice.** Nothing in this repository constitutes investment, trading, legal, tax, or financial advice. Prediction-market and cryptocurrency trading involve substantial risk of loss, including total loss of funds.
+**Security is your responsibility.** Production operators are responsible for private keys, custody encryption keys, API secrets, wallet infrastructure, database access, monitoring, incident response, backups, admin access controls, and compliance obligations such as AML/KYC, sanctions, securities, gambling, and tax rules where applicable.
 
-**Use at your own risk.** Even with authorization, you remain solely responsible for configuration, security (private keys, custody encryption keys, API secrets, wallet infrastructure), compliance (including AML/KYC, sanctions, securities, gambling, and tax rules where applicable), and all outcomes. The authors and contributors are **not liable** for any loss of funds, data, profits, damages, or regulatory consequences arising from use of this software.
+**Liability limitation.** The authors and contributors are not liable for loss of funds, data, profits, business opportunity, reputation, or any direct or indirect damages or regulatory consequences arising from use, modification, deployment, or reliance on this software.
 
-**Educational / research context.** Source code may be published for educational and research discussion under the terms of the [LICENSE](LICENSE), subject to the authorization and jurisdiction restrictions above. Production use of copy-trading, custodial wallets, or automated order execution is permitted **only** with prior written authorization and **only** where lawful.
-
-If you do not have authorization, or if your local law does not permit this activity, **do not use this software**.
+By using this repository, you acknowledge the risks above and agree to deploy it only with proper authorization, security review, and legal/compliance review.
